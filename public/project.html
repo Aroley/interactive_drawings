@@ -7,7 +7,7 @@
       body {
         margin: 0;
         overflow: hidden;
-        background: black;
+        background: white;
       }
     </style>
   </head>
@@ -26,7 +26,7 @@
         window.innerHeight / 2,
         window.innerHeight / -2,
         1,
-        1000
+        1000,
       );
       camera.position.z = 10;
 
@@ -35,7 +35,7 @@
         alpha: true,
       });
       renderer.setSize(window.innerWidth, window.innerHeight);
-      renderer.setClearColor(0x000000, 0.15);
+      renderer.setClearColor(0x000000, 1);
       renderer.autoClear = false;
       document.body.appendChild(renderer.domElement);
 
@@ -51,9 +51,19 @@
       const drawings = [];
       const MAX_DRAWINGS = 30;
 
-      // ── Receive drawing from tablet ────────────────────────────────────────
-      // Payload is now { imageData, throwSpeed } instead of a raw string
+      // ── Trail system ─────────────────────────────────────────────────────
+      // Each drawing keeps a small pool of ghost meshes behind it.
+      const TRAIL_LENGTH = 5; // ghost copies per drawing
 
+      function createTrailMesh(material, geometry) {
+        const mat = material.clone();
+        mat.opacity = 0;
+        const mesh = new THREE.Mesh(geometry, mat);
+        scene.add(mesh);
+        return mesh;
+      }
+
+      // ── Receive drawing ───────────────────────────────────────────────────
       socket.on("newDrawing", ({ imageData, throwSpeed }) => {
         const loader = new THREE.TextureLoader();
 
@@ -61,36 +71,67 @@
           texture.minFilter = THREE.LinearFilter;
           texture.magFilter = THREE.LinearFilter;
 
-          // ✅ texture.image dimensions are valid inside the callback
-          const baseSize = 360;
+          const baseSize = 340;
           const aspect = texture.image.width / texture.image.height;
-          const geometry = new THREE.PlaneGeometry(baseSize * aspect, baseSize);
+          const w = baseSize * aspect;
+          const h = baseSize;
 
+          const geometry = new THREE.PlaneGeometry(w, h);
           const material = new THREE.MeshBasicMaterial({
             map: texture,
             transparent: true,
-            opacity: 0.9,
+            opacity: 0.92,
           });
 
           const mesh = new THREE.Mesh(geometry, material);
 
-          // Start just below the bottom of the screen, slightly random x
-          // so multiple fast draws don't perfectly stack
+          // Spawn at bottom, slight random x offset
           mesh.position.set(
             (Math.random() - 0.5) * window.innerWidth * 0.5,
             -window.innerHeight / 2 - 200,
-            0
+            0,
           );
 
-          // Scale throw speed (px/ms) → scene units/frame
-          // Typical swipe: 0.3–1.5 px/ms → we want vy 4–14
-          const vy = Math.min(Math.max(throwSpeed * 8, 4), 14);
+          const vy = Math.min(Math.max((throwSpeed || 0.6) * 8, 4), 14);
+
+          // Each drawing randomly gets one of three collision personalities:
+          //   "bounce"  – tries to avoid others, bounces off them
+          //   "ghost"   – passes through everything (50% opacity trails)
+          //   "mixed"   – randomly bounces or ghosts per-collision
+          const personalities = ["bounce", "ghost", "mixed"];
+          const personality = personalities[Math.floor(Math.random() * 3)];
+
+          // Morph parameters – each drawing breathes/scales at its own rate
+          const morphSpeed = 0.4 + Math.random() * 0.8; // cycles/sec
+          const morphAmp = 0.04 + Math.random() * 0.06; // scale deviation
+          const morphPhase = Math.random() * Math.PI * 2;
+          const rotationSpeed = (Math.random() - 0.5) * 0.003; // subtle slow spin
+
+          // Build trail pool
+          const trail = [];
+          for (let i = 0; i < TRAIL_LENGTH; i++) {
+            trail.push({
+              mesh: createTrailMesh(material, geometry),
+              x: mesh.position.x,
+              y: mesh.position.y,
+            });
+          }
 
           mesh.userData = {
             vx: (Math.random() - 0.5) * 1.5,
-            vy: vy,                          // strong upward velocity from throw
+            vy,
             wobble: Math.random() * Math.PI * 2,
-            launched: true,                  // in "throw arc" phase
+            launched: true,
+            w,
+            h, // collision bounding box half-extents
+            personality,
+            morphSpeed,
+            morphAmp,
+            morphPhase,
+            rotationSpeed,
+            trail,
+            trailIndex: 0, // ring-buffer cursor
+            trailTimer: 0,
           };
 
           scene.add(mesh);
@@ -98,6 +139,12 @@
 
           if (drawings.length > MAX_DRAWINGS) {
             const old = drawings.shift();
+            // Clean up trail
+            old.userData.trail.forEach((t) => {
+              scene.remove(t.mesh);
+              t.mesh.geometry.dispose();
+              t.mesh.material.dispose();
+            });
             scene.remove(old);
             old.geometry.dispose();
             old.material.map.dispose();
@@ -106,42 +153,151 @@
         });
       });
 
-      // ── Animation loop ─────────────────────────────────────────────────────
+      // ── Collision helpers ─────────────────────────────────────────────────
 
+      // Simple AABB overlap test (with a small padding so they don't touch)
+      const COLLISION_PADDING = 20;
+
+      function overlaps(a, b) {
+        const aw = (a.userData.w / 2 + COLLISION_PADDING) * (a.scale.x || 1);
+        const ah = (a.userData.h / 2 + COLLISION_PADDING) * (a.scale.y || 1);
+        const bw = (b.userData.w / 2 + COLLISION_PADDING) * (b.scale.x || 1);
+        const bh = (b.userData.h / 2 + COLLISION_PADDING) * (b.scale.y || 1);
+
+        return (
+          Math.abs(a.position.x - b.position.x) < aw + bw &&
+          Math.abs(a.position.y - b.position.y) < ah + bh
+        );
+      }
+
+      // Elastic-ish velocity swap on collision axis
+      function bounceVelocities(a, b) {
+        const dx = b.position.x - a.position.x;
+        const dy = b.position.y - a.position.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        // normal vector
+        const nx = dx / dist;
+        const ny = dy / dist;
+        // relative velocity along normal
+        const dvn =
+          (a.userData.vx - b.userData.vx) * nx +
+          (a.userData.vy - b.userData.vy) * ny;
+        if (dvn < 0) return; // already separating
+        // swap along normal
+        a.userData.vx -= dvn * nx;
+        a.userData.vy -= dvn * ny;
+        b.userData.vx += dvn * nx;
+        b.userData.vy += dvn * ny;
+      }
+
+      // ── Animation loop ────────────────────────────────────────────────────
       function animate() {
         requestAnimationFrame(animate);
-        renderer.clearDepth();
+
+        // Fade the framebuffer slightly instead of full clear → trail effect
+        // We do this by rendering a near-black full-screen quad each frame
+        renderer.clear();
 
         const t = performance.now() * 0.001;
 
+        // ── Move all drawings ─────────────────────────────────────────────
         drawings.forEach((d) => {
-          if (d.userData.launched) {
-            // Gravity-like deceleration during the throw arc
-            d.userData.vy -= 0.12;
-            d.position.x += d.userData.vx;
-            d.position.y += d.userData.vy;
+          const ud = d.userData;
 
-            // Hand off to gentle float once the throw energy is spent
-            if (Math.abs(d.userData.vy) < 1.5) {
-              d.userData.launched = false;
-              d.userData.vy = (Math.random() - 0.5) * 1.5;
+          if (ud.launched) {
+            ud.vy -= 0.12; // deceleration
+            d.position.x += ud.vx;
+            d.position.y += ud.vy;
+            if (Math.abs(ud.vy) < 1.5) {
+              ud.launched = false;
+              ud.vy = (Math.random() - 0.5) * 1.5;
             }
           } else {
-            // Normal gentle floating
-            d.position.x += d.userData.vx;
-            d.position.y += d.userData.vy;
-            d.position.y += Math.sin(t + d.userData.wobble) * 0.3;
+            d.position.x += ud.vx;
+            d.position.y += ud.vy;
+            d.position.y += Math.sin(t + ud.wobble) * 0.25;
           }
 
-          // Wrap around edges so drawings never fully disappear
+          // ── Morph / breathe ─────────────────────────────────────────────
+          const breathe =
+            1 + Math.sin(t * ud.morphSpeed + ud.morphPhase) * ud.morphAmp;
+          // Also add a very subtle secondary oscillation for organic feel
+          const breathe2 =
+            1 +
+            Math.cos(t * ud.morphSpeed * 1.37 + ud.morphPhase + 1) *
+              (ud.morphAmp * 0.4);
+          d.scale.set(breathe * breathe2, breathe, 1);
+          d.rotation.z += ud.rotationSpeed;
+
+          // ── Trail ────────────────────────────────────────────────────────
+          ud.trailTimer++;
+          if (ud.trailTimer % 3 === 0) {
+            // stamp a ghost every 3 frames
+            const ghost = ud.trail[ud.trailIndex % TRAIL_LENGTH];
+            ghost.mesh.position.set(d.position.x, d.position.y, -1);
+            ghost.mesh.rotation.z = d.rotation.z;
+            ghost.mesh.scale.set(d.scale.x, d.scale.y, 1);
+            ghost.mesh.material.opacity = 0.18;
+            ud.trailIndex++;
+          }
+
+          // Fade all ghost trail meshes toward zero
+          ud.trail.forEach((ghost) => {
+            ghost.mesh.material.opacity *= 0.82;
+          });
+
+          // ── Edge wrap ────────────────────────────────────────────────────
           if (
-            Math.abs(d.position.x) > window.innerWidth / 2 + 200 ||
-            Math.abs(d.position.y) > window.innerHeight / 2 + 200
+            Math.abs(d.position.x) > window.innerWidth / 2 + 250 ||
+            Math.abs(d.position.y) > window.innerHeight / 2 + 250
           ) {
-            d.position.x *= -1;
-            d.position.y *= -1;
+            d.position.x *= -0.95;
+            d.position.y *= -0.95;
           }
         });
+
+        // ── Collision pass ────────────────────────────────────────────────
+        // Only run for settled (non-launched) drawings to keep throws clean
+        for (let i = 0; i < drawings.length; i++) {
+          const a = drawings[i];
+          if (a.userData.launched) continue;
+
+          for (let j = i + 1; j < drawings.length; j++) {
+            const b = drawings[j];
+            if (b.userData.launched) continue;
+
+            if (!overlaps(a, b)) continue;
+
+            // Decide behaviour based on both personalities
+            const pA = a.userData.personality;
+            const pB = b.userData.personality;
+
+            let shouldBounce = false;
+
+            if (pA === "bounce" && pB === "bounce") {
+              shouldBounce = true;
+            } else if (pA === "ghost" || pB === "ghost") {
+              shouldBounce = false; // at least one ghost → pass through
+            } else if (pA === "mixed" || pB === "mixed") {
+              shouldBounce = Math.random() < 0.5; // coin flip each collision
+            }
+
+            if (shouldBounce) {
+              bounceVelocities(a, b);
+
+              // Nudge apart so they don't stick
+              const dx = b.position.x - a.position.x || 0.1;
+              const dy = b.position.y - a.position.y || 0.1;
+              const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+              const push = 2;
+              a.position.x -= (dx / dist) * push;
+              a.position.y -= (dy / dist) * push;
+              b.position.x += (dx / dist) * push;
+              b.position.y += (dy / dist) * push;
+            }
+            // ghost: do nothing → they pass through
+          }
+        }
 
         renderer.render(scene, camera);
       }

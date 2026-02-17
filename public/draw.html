@@ -2,7 +2,7 @@
 <html>
   <head>
     <meta charset="UTF-8" />
-
+    <title>Draw</title>
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta
       name="apple-mobile-web-app-status-bar-style"
@@ -12,87 +12,309 @@
       name="viewport"
       content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
     />
-    <title>Draw</title>
+
     <style>
+      @import url("https://fonts.googleapis.com/css2?family=Nunito:wght@700;900&display=swap");
+
+      * {
+        box-sizing: border-box;
+      }
+
       body {
         margin: 0;
-        background: #f5f5f5;
-        font-family: sans-serif;
+        background: #f0eee8;
+        font-family: "Nunito", sans-serif;
+        overflow: hidden;
+        height: 100dvh;
+        display: flex;
+        flex-direction: column;
+      }
+
+      /* ── Canvas area ─────────────────────────────────────── */
+      #canvas-wrap {
+        flex: 1;
+        position: relative;
+        overflow: hidden;
       }
 
       canvas {
         display: block;
         touch-action: none;
         background: white;
+        width: 100%;
+        height: 100%;
       }
 
-      #ui {
-        position: fixed;
+      /* ── Swipe reminder ──────────────────────────────────── */
+      #swipe-reminder {
+        position: absolute;
         bottom: 0;
-        width: 100%;
-        background: #222;
-        padding: 10px;
+        left: 0;
+        right: 0;
+        text-align: center;
+        padding: 12px 20px 16px;
+        font-size: 18px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        color: rgba(60, 45, 30, 0.5);
+        background: linear-gradient(
+          to top,
+          rgba(255, 255, 255, 0.96) 55%,
+          transparent
+        );
+        pointer-events: none;
+        user-select: none;
+      }
+
+      #swipe-reminder .arrow {
+        display: inline-block;
+        animation: bob 1.8s ease-in-out infinite;
+        margin-right: 4px;
+      }
+
+      @keyframes bob {
+        0%,
+        100% {
+          transform: translateY(0px);
+        }
+        50% {
+          transform: translateY(-6px);
+        }
+      }
+
+      /* ── Bottom UI bar ───────────────────────────────────── */
+      #ui {
+        background: #1a1a2e;
+        padding: 16px 20px 28px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      #color-row {
         display: flex;
         gap: 12px;
         align-items: center;
+        justify-content: center;
+        flex-wrap: wrap;
       }
 
       .color {
-        width: 40px;
-        height: 40px;
+        width: 54px;
+        height: 54px;
         border-radius: 50%;
-        border: 3px solid white;
+        border: 4px solid rgba(255, 255, 255, 0.15);
         cursor: pointer;
+        transition:
+          transform 0.15s,
+          border-color 0.15s,
+          box-shadow 0.15s;
+        flex-shrink: 0;
       }
 
-      button {
-        font-size: 18px;
-        padding: 10px 16px;
+      .color.active {
+        border-color: white;
+        transform: scale(1.2);
+        box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.3);
+      }
+
+      .color:active {
+        transform: scale(0.9);
+      }
+
+      /* ── Thickness slider row ────────────────────────────── */
+      #thickness-row {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 0 4px;
+      }
+
+      .pen-icon {
+        background: white;
+        border-radius: 50%;
+        flex-shrink: 0;
+        opacity: 0.65;
       }
 
       input[type="range"] {
-        width: 120px;
+        -webkit-appearance: none;
+        appearance: none;
+        flex: 1;
+        height: 12px;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.18);
+        outline: none;
+        cursor: pointer;
       }
 
-      /* Swipe hint overlay */
-      #swipe-hint {
-        position: fixed;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        background: rgba(0, 0, 0, 0.6);
-        color: white;
-        font-size: 22px;
+      input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 42px;
+        height: 42px;
+        border-radius: 50%;
+        background: white;
+        box-shadow: 0 3px 10px rgba(0, 0, 0, 0.5);
+        cursor: pointer;
+        transition: transform 0.1s;
+      }
+
+      input[type="range"]:active::-webkit-slider-thumb {
+        transform: scale(1.15);
+      }
+
+      /* ── Buttons row ─────────────────────────────────────── */
+      #bottom-row {
+        display: flex;
+        gap: 12px;
+      }
+
+      button {
+        font-family: "Nunito", sans-serif;
+        font-size: 21px;
+        font-weight: 900;
         padding: 16px 28px;
-        border-radius: 16px;
-        pointer-events: none;
-        opacity: 0;
-        transition: opacity 0.3s;
-        text-align: center;
+        border: none;
+        border-radius: 18px;
+        cursor: pointer;
+        letter-spacing: 0.02em;
+        transition:
+          transform 0.12s,
+          opacity 0.12s;
+        flex: 1;
       }
 
-      #swipe-hint.visible {
-        opacity: 1;
+      button:active {
+        transform: scale(0.93);
+        opacity: 0.85;
+      }
+
+      #clear {
+        background: rgba(255, 255, 255, 0.1);
+        color: rgba(255, 255, 255, 0.65);
+      }
+
+      /* ── Launch flash ────────────────────────────────────── */
+      #launch-flash {
+        position: fixed;
+        inset: 0;
+        background: rgba(255, 255, 255, 0);
+        pointer-events: none;
+        z-index: 100;
+        transition: background 0.07s;
+      }
+
+      #launch-flash.flash {
+        background: rgba(255, 255, 255, 0.5);
       }
     </style>
   </head>
 
   <body>
-    <canvas id="canvas"></canvas>
-
-    <div id="ui">
-      <div class="color" style="background: #ff3b3b"></div>
-      <div class="color" style="background: #ffcc00"></div>
-      <div class="color" style="background: #00e676"></div>
-      <div class="color" style="background: #00b0ff"></div>
-      <div class="color" style="background: #d500f9"></div>
-
-      <input id="thickness" type="range" min="4" max="64" value="24" />
-
-      <button id="clear">Clear</button>
+    <div id="canvas-wrap">
+      <canvas id="canvas"></canvas>
+      <div id="swipe-reminder">
+        <span class="arrow">👆</span
+        ><span class="arrow" style="animation-delay: 0.2s">👆</span>
+        two-finger swipe up to launch your drawing
+      </div>
     </div>
 
-    <div id="swipe-hint">👆👆 Two-finger swipe up to launch!</div>
+    <!-- PASTELS -->
+    <!-- <div id="ui">
+      <div id="color-row">
+        <div
+          class="color"
+          style="background: #ffaafa"
+          data-color="#FFAAFA"
+        ></div>
+        <div
+          class="color"
+          style="background: #a8f48a"
+          data-color="#A8F48A"
+        ></div>
+        <div
+          class="color"
+          style="background: #feffaf"
+          data-color="#FEFFAF"
+        ></div>
+        <div
+          class="color"
+          style="background: #b5dbff"
+          data-color="#B5DBFF"
+        ></div>
+        <div
+          class="color"
+          style="background: #251f1b; border-color: rgba(255, 255, 255, 0.4)"
+          data-color="#251F1B"
+        ></div>
+      </div> -->
+
+      <div id="thickness-row">
+        <div class="pen-icon" style="width: 12px; height: 12px"></div>
+        <input id="thickness" type="range" min="4" max="80" value="24" />
+        <div class="pen-icon" style="width: 30px; height: 30px"></div>
+      </div>
+
+      <div id="bottom-row">
+        <button id="clear">🗑&nbsp; Clear</button>
+      </div>
+    </div>
+
+    <!-- BRIGHTS -->
+     
+    <div id="ui">
+      <div id="color-row">
+        <div
+          class="color active"
+          style="background: #ff3b3b"
+          data-color="#ff3b3b"
+        ></div>
+        <div
+          class="color"
+          style="background: #ff6d00"
+          data-color="#ff6d00"
+        ></div>
+        <div
+          class="color"
+          style="background: #ffcc00"
+          data-color="#ffcc00"
+        ></div>
+        <div
+          class="color"
+          style="background: #00e676"
+          data-color="#00e676"
+        ></div>
+        <div
+          class="color"
+          style="background: #00b0ff"
+          data-color="#00b0ff"
+        ></div>
+        <div
+          class="color"
+          style="background: #d500f9"
+          data-color="#d500f9"
+        ></div>
+        <div
+          class="color"
+          style="background: #ffffff; border-color: rgba(255, 255, 255, 0.4)"
+          data-color="#ffffff"
+        ></div>
+      </div>
+
+      <div id="thickness-row">
+        <div class="pen-icon" style="width: 12px; height: 12px"></div>
+        <input id="thickness" type="range" min="4" max="80" value="24" />
+        <div class="pen-icon" style="width: 30px; height: 30px"></div>
+      </div>
+
+      <div id="bottom-row">
+        <button id="clear">🗑&nbsp; Clear</button>
+      </div>
+    </div> 
+
+    <div id="launch-flash"></div>
 
     <script src="/socket.io/socket.io.js"></script>
 
@@ -100,30 +322,35 @@
       const socket = io();
       const canvas = document.getElementById("canvas");
       const ctx = canvas.getContext("2d");
-      const swipeHint = document.getElementById("swipe-hint");
+      const flash = document.getElementById("launch-flash");
 
-      // High DPI scaling = sharper lines
+      let currentColor = "#ff3b3b";
+      let currentThickness = 24;
+
+      // ── High-DPI canvas ──────────────────────────────────────────────────
       function resize() {
         const dpr = window.devicePixelRatio || 1;
-        canvas.width = window.innerWidth * dpr;
-        canvas.height = (window.innerHeight - 80) * dpr;
-        canvas.style.width = window.innerWidth + "px";
-        canvas.style.height = window.innerHeight - 80 + "px";
+        const wrap = document.getElementById("canvas-wrap");
+        const w = wrap.clientWidth;
+        const h = wrap.clientHeight;
+        canvas.width = w * dpr;
+        canvas.height = h * dpr;
+        canvas.style.width = w + "px";
+        canvas.style.height = h + "px";
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.strokeStyle = currentColor;
+        ctx.lineWidth = currentThickness;
       }
 
       resize();
       window.addEventListener("resize", resize);
 
-      ctx.lineCap = "round";
-      ctx.lineJoin = "round";
-      ctx.strokeStyle = "#ff3b3b";
-      ctx.lineWidth = 24;
-
+      // ── Drawing input ────────────────────────────────────────────────────
       let drawing = false;
 
       canvas.addEventListener("pointerdown", (e) => {
-        // Only draw with a single pointer (not during two-finger swipe)
         if (e.isPrimary) {
           drawing = true;
           ctx.beginPath();
@@ -140,42 +367,40 @@
       canvas.addEventListener("pointerup", (e) => {
         if (e.isPrimary) drawing = false;
       });
-
       canvas.addEventListener("pointerleave", (e) => {
         if (e.isPrimary) drawing = false;
       });
 
+      // ── Color pickers ────────────────────────────────────────────────────
       document.querySelectorAll(".color").forEach((el) => {
-        el.onclick = () => (ctx.strokeStyle = el.style.background);
+        el.addEventListener("click", () => {
+          document
+            .querySelectorAll(".color")
+            .forEach((c) => c.classList.remove("active"));
+          el.classList.add("active");
+          currentColor = el.dataset.color;
+          ctx.strokeStyle = currentColor;
+        });
       });
 
-      document.getElementById("thickness").oninput = (e) => {
-        ctx.lineWidth = e.target.value;
-      };
+      // ── Thickness ────────────────────────────────────────────────────────
+      document.getElementById("thickness").addEventListener("input", (e) => {
+        currentThickness = +e.target.value;
+        ctx.lineWidth = currentThickness;
+      });
 
+      // ── Clear ────────────────────────────────────────────────────────────
       document.getElementById("clear").onclick = () => {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
       };
 
-      // ── Two-finger swipe-up to launch ──────────────────────────────────────
-
+      // ── Two-finger swipe-up to launch ────────────────────────────────────
       let touchStartX, touchStartY, touchStartTime;
-      let hintTimeout;
-
-      // Show the hint briefly on first load so kids know the gesture
-      setTimeout(() => {
-        swipeHint.classList.add("visible");
-        hintTimeout = setTimeout(
-          () => swipeHint.classList.remove("visible"),
-          3000,
-        );
-      }, 1000);
 
       canvas.addEventListener(
         "touchstart",
         (e) => {
           if (e.touches.length === 2) {
-            // Pause drawing while two fingers are down
             drawing = false;
             touchStartX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
             touchStartY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
@@ -189,52 +414,39 @@
       canvas.addEventListener(
         "touchend",
         (e) => {
-          if (
-            e.changedTouches.length >= 1 &&
-            touchStartY !== undefined &&
-            e.touches.length === 0 // both fingers lifted
-          ) {
-            // Average the positions of all changed touches
-            let endX = 0,
-              endY = 0;
-            for (let i = 0; i < e.changedTouches.length; i++) {
-              endX += e.changedTouches[i].clientX;
-              endY += e.changedTouches[i].clientY;
-            }
-            endX /= e.changedTouches.length;
-            endY /= e.changedTouches.length;
+          if (touchStartY === undefined || e.touches.length > 0) return;
 
-            const elapsed = Date.now() - touchStartTime;
-            const dx = endX - touchStartX;
-            const dy = endY - touchStartY; // negative = upward
-
-            const isSwipeUp =
-              dy < -80 && // moved up at least 80px
-              Math.abs(dy) > Math.abs(dx) * 1.5 && // more vertical than horizontal
-              elapsed < 600; // fast enough to feel like a throw
-
-            if (isSwipeUp) {
-              const speed = Math.abs(dy) / elapsed; // px/ms
-
-              // Flash the hint as feedback
-              clearTimeout(hintTimeout);
-              swipeHint.textContent = "🚀 Launched!";
-              swipeHint.classList.add("visible");
-              hintTimeout = setTimeout(() => {
-                swipeHint.classList.remove("visible");
-                swipeHint.textContent = "👆👆 Two-finger swipe up to launch!";
-              }, 800);
-
-              socket.emit("drawing", {
-                imageData: canvas.toDataURL("image/png"),
-                throwSpeed: speed,
-              });
-
-              ctx.clearRect(0, 0, canvas.width, canvas.height);
-            }
-
-            touchStartY = undefined;
+          let endX = 0,
+            endY = 0;
+          for (let i = 0; i < e.changedTouches.length; i++) {
+            endX += e.changedTouches[i].clientX;
+            endY += e.changedTouches[i].clientY;
           }
+          endX /= e.changedTouches.length;
+          endY /= e.changedTouches.length;
+
+          const elapsed = Date.now() - touchStartTime;
+          const dx = endX - touchStartX;
+          const dy = endY - touchStartY;
+
+          const isSwipeUp =
+            dy < -80 && Math.abs(dy) > Math.abs(dx) * 1.5 && elapsed < 600;
+
+          if (isSwipeUp) {
+            const speed = Math.abs(dy) / elapsed;
+
+            flash.classList.add("flash");
+            setTimeout(() => flash.classList.remove("flash"), 180);
+
+            socket.emit("drawing", {
+              imageData: canvas.toDataURL("image/png"),
+              throwSpeed: speed,
+            });
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+          }
+
+          touchStartY = undefined;
         },
         { passive: false },
       );
