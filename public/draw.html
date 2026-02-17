@@ -1,0 +1,243 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta
+      name="apple-mobile-web-app-status-bar-style"
+      content="black-fullscreen"
+    />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
+    />
+    <title>Draw</title>
+    <style>
+      body {
+        margin: 0;
+        background: #f5f5f5;
+        font-family: sans-serif;
+      }
+
+      canvas {
+        display: block;
+        touch-action: none;
+        background: white;
+      }
+
+      #ui {
+        position: fixed;
+        bottom: 0;
+        width: 100%;
+        background: #222;
+        padding: 10px;
+        display: flex;
+        gap: 12px;
+        align-items: center;
+      }
+
+      .color {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        border: 3px solid white;
+        cursor: pointer;
+      }
+
+      button {
+        font-size: 18px;
+        padding: 10px 16px;
+      }
+
+      input[type="range"] {
+        width: 120px;
+      }
+
+      /* Swipe hint overlay */
+      #swipe-hint {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(0, 0, 0, 0.6);
+        color: white;
+        font-size: 22px;
+        padding: 16px 28px;
+        border-radius: 16px;
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.3s;
+        text-align: center;
+      }
+
+      #swipe-hint.visible {
+        opacity: 1;
+      }
+    </style>
+  </head>
+
+  <body>
+    <canvas id="canvas"></canvas>
+
+    <div id="ui">
+      <div class="color" style="background: #ff3b3b"></div>
+      <div class="color" style="background: #ffcc00"></div>
+      <div class="color" style="background: #00e676"></div>
+      <div class="color" style="background: #00b0ff"></div>
+      <div class="color" style="background: #d500f9"></div>
+
+      <input id="thickness" type="range" min="4" max="64" value="24" />
+
+      <button id="clear">Clear</button>
+    </div>
+
+    <div id="swipe-hint">👆👆 Two-finger swipe up to launch!</div>
+
+    <script src="/socket.io/socket.io.js"></script>
+
+    <script>
+      const socket = io();
+      const canvas = document.getElementById("canvas");
+      const ctx = canvas.getContext("2d");
+      const swipeHint = document.getElementById("swipe-hint");
+
+      // High DPI scaling = sharper lines
+      function resize() {
+        const dpr = window.devicePixelRatio || 1;
+        canvas.width = window.innerWidth * dpr;
+        canvas.height = (window.innerHeight - 80) * dpr;
+        canvas.style.width = window.innerWidth + "px";
+        canvas.style.height = window.innerHeight - 80 + "px";
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      }
+
+      resize();
+      window.addEventListener("resize", resize);
+
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = "#ff3b3b";
+      ctx.lineWidth = 24;
+
+      let drawing = false;
+
+      canvas.addEventListener("pointerdown", (e) => {
+        // Only draw with a single pointer (not during two-finger swipe)
+        if (e.isPrimary) {
+          drawing = true;
+          ctx.beginPath();
+          ctx.moveTo(e.clientX, e.clientY);
+        }
+      });
+
+      canvas.addEventListener("pointermove", (e) => {
+        if (!drawing || !e.isPrimary) return;
+        ctx.lineTo(e.clientX, e.clientY);
+        ctx.stroke();
+      });
+
+      canvas.addEventListener("pointerup", (e) => {
+        if (e.isPrimary) drawing = false;
+      });
+
+      canvas.addEventListener("pointerleave", (e) => {
+        if (e.isPrimary) drawing = false;
+      });
+
+      document.querySelectorAll(".color").forEach((el) => {
+        el.onclick = () => (ctx.strokeStyle = el.style.background);
+      });
+
+      document.getElementById("thickness").oninput = (e) => {
+        ctx.lineWidth = e.target.value;
+      };
+
+      document.getElementById("clear").onclick = () => {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      };
+
+      // ── Two-finger swipe-up to launch ──────────────────────────────────────
+
+      let touchStartX, touchStartY, touchStartTime;
+      let hintTimeout;
+
+      // Show the hint briefly on first load so kids know the gesture
+      setTimeout(() => {
+        swipeHint.classList.add("visible");
+        hintTimeout = setTimeout(
+          () => swipeHint.classList.remove("visible"),
+          3000,
+        );
+      }, 1000);
+
+      canvas.addEventListener(
+        "touchstart",
+        (e) => {
+          if (e.touches.length === 2) {
+            // Pause drawing while two fingers are down
+            drawing = false;
+            touchStartX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+            touchStartY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+            touchStartTime = Date.now();
+            e.preventDefault();
+          }
+        },
+        { passive: false },
+      );
+
+      canvas.addEventListener(
+        "touchend",
+        (e) => {
+          if (
+            e.changedTouches.length >= 1 &&
+            touchStartY !== undefined &&
+            e.touches.length === 0 // both fingers lifted
+          ) {
+            // Average the positions of all changed touches
+            let endX = 0,
+              endY = 0;
+            for (let i = 0; i < e.changedTouches.length; i++) {
+              endX += e.changedTouches[i].clientX;
+              endY += e.changedTouches[i].clientY;
+            }
+            endX /= e.changedTouches.length;
+            endY /= e.changedTouches.length;
+
+            const elapsed = Date.now() - touchStartTime;
+            const dx = endX - touchStartX;
+            const dy = endY - touchStartY; // negative = upward
+
+            const isSwipeUp =
+              dy < -80 && // moved up at least 80px
+              Math.abs(dy) > Math.abs(dx) * 1.5 && // more vertical than horizontal
+              elapsed < 600; // fast enough to feel like a throw
+
+            if (isSwipeUp) {
+              const speed = Math.abs(dy) / elapsed; // px/ms
+
+              // Flash the hint as feedback
+              clearTimeout(hintTimeout);
+              swipeHint.textContent = "🚀 Launched!";
+              swipeHint.classList.add("visible");
+              hintTimeout = setTimeout(() => {
+                swipeHint.classList.remove("visible");
+                swipeHint.textContent = "👆👆 Two-finger swipe up to launch!";
+              }, 800);
+
+              socket.emit("drawing", {
+                imageData: canvas.toDataURL("image/png"),
+                throwSpeed: speed,
+              });
+
+              ctx.clearRect(0, 0, canvas.width, canvas.height);
+            }
+
+            touchStartY = undefined;
+          }
+        },
+        { passive: false },
+      );
+    </script>
+  </body>
+</html>
