@@ -1,0 +1,291 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Scanner (keep this tab open)</title>
+  <style>
+    body { background: #111; color: #0f0; font-family: monospace; padding: 20px; }
+    h2   { color: #0f0; margin-bottom: 4px; }
+    .sub { color: #666; font-size: 13px; margin: 0 0 20px; }
+    #log { font-size: 13px; line-height: 1.7; max-height: 80vh; overflow-y: auto; }
+    .pass { color: #0f0; }
+    .fail { color: #f55; }
+    .info { color: #888; }
+    #status {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 99px;
+      font-size: 12px;
+      margin-bottom: 16px;
+      background: rgba(239,68,68,0.15);
+      color: #f55;
+      border: 1px solid rgba(239,68,68,0.3);
+    }
+    #status.online {
+      background: rgba(34,197,94,0.15);
+      color: #0f0;
+      border-color: rgba(34,197,94,0.3);
+    }
+  </style>
+</head>
+<body>
+  <h2>🔍 Shape Scanner</h2>
+  <div id="status">● disconnected</div>
+  <p class="sub">Keep this tab open. Handles shape detection — OCR runs server-side.</p>
+  <div id="log"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <canvas id="work" style="display:none"></canvas>
+
+  <script>
+    const socket    = io();
+    const logEl     = document.getElementById("log");
+    const statusEl  = document.getElementById("status");
+    const work      = document.getElementById("work");
+    const wctx      = work.getContext("2d", { willReadFrequently: true });
+
+    socket.on("connect", () => {
+      socket.emit("register", "scanner");
+      statusEl.textContent = "● connected";
+      statusEl.classList.add("online");
+      log("info", "Connected to server ✓");
+    });
+
+    socket.on("disconnect", () => {
+      statusEl.textContent = "● disconnected";
+      statusEl.classList.remove("online");
+      log("info", "Disconnected from server");
+    });
+
+    // ── Shape scan request ────────────────────────────────────────────────
+    socket.on("scanThis", async ({ scanId, imageData }) => {
+      log("info", `Shape-scanning ${scanId}…`);
+      const reasons = [];
+
+      try {
+        const img = await loadImage(imageData);
+        work.width  = img.naturalWidth  || img.width;
+        work.height = img.naturalHeight || img.height;
+        wctx.clearRect(0, 0, work.width, work.height);
+        wctx.drawImage(img, 0, 0);
+        const pixels = wctx.getImageData(0, 0, work.width, work.height);
+
+        const phallicFlag = checkPhallic(pixels, work.width, work.height);
+        if (phallicFlag) reasons.push(phallicFlag);
+
+        const breastFlag = checkBreasts(pixels, work.width, work.height);
+        if (breastFlag) reasons.push(breastFlag);
+
+      } catch (err) {
+        log("info", `Error during shape scan (${scanId}): ${err.message}`);
+      }
+
+      // Emit shapeResult (not scanResult — OCR is handled server-side now)
+      socket.emit("shapeResult", { scanId, reasons });
+
+      reasons.length === 0
+        ? log("pass", `✓ ${scanId} — shape clean`)
+        : log("fail", `✗ ${scanId} — ${reasons.join("; ")}`);
+    });
+
+    // ── Shared ink-mask builder ───────────────────────────────────────────
+    function buildInkMask(pixels, W, H) {
+      const { data } = pixels;
+      const ink = new Uint8Array(W * H);
+      let count = 0;
+      for (let i = 0; i < W * H; i++) {
+        const r = data[i*4], g = data[i*4+1], b = data[i*4+2], a = data[i*4+3];
+        if (a > 20 && !(r > 230 && g > 230 && b > 230)) {
+          ink[i] = 1;
+          count++;
+        }
+      }
+      return { ink, count };
+    }
+
+    function inkBounds(ink, W, H) {
+      let minX = W, maxX = 0, minY = H, maxY = 0;
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+          if (ink[y * W + x]) {
+            if (x < minX) minX = x; if (x > maxX) maxX = x;
+            if (y < minY) minY = y; if (y > maxY) maxY = y;
+          }
+        }
+      }
+      return { minX, maxX, minY, maxY, bW: maxX-minX+1, bH: maxY-minY+1 };
+    }
+
+    // ── Phallic shape detection ───────────────────────────────────────────
+    function checkPhallic(pixels, W, H) {
+      const { ink, count } = buildInkMask(pixels, W, H);
+      if (count < 500) return null;
+
+      const { minX, maxX, minY, maxY, bW, bH } = inkBounds(ink, W, H);
+      if (bW < 5 || bH < 5) return null;
+
+      const aspect = bH / bW;
+      if (aspect < 1.4) return null;
+
+      const BANDS = 20;
+      const bandH = bH / BANDS;
+      const widths = new Array(BANDS).fill(0);
+
+      for (let b = 0; b < BANDS; b++) {
+        const y0 = Math.round(minY + b * bandH);
+        const y1 = Math.round(minY + (b+1) * bandH);
+        let left = W, right = 0, found = false;
+        for (let y = y0; y < Math.min(y1, H); y++) {
+          for (let x = minX; x <= maxX; x++) {
+            if (ink[y * W + x]) {
+              if (x < left) left = x;
+              if (x > right) right = x;
+              found = true;
+            }
+          }
+        }
+        widths[b] = found ? (right - left + 1) : 0;
+      }
+
+      const maxW  = Math.max(...widths) || 1;
+      const normW = widths.map(w => w / maxW);
+
+      // Left–right symmetry
+      const cx = (minX + maxX) / 2;
+      let symScore = 0, symCount = 0;
+      for (let y = minY; y <= maxY; y++) {
+        let sumX = 0, cnt = 0;
+        for (let x = minX; x <= maxX; x++) {
+          if (ink[y * W + x]) { sumX += x; cnt++; }
+        }
+        if (cnt > 0) {
+          symScore += 1 - Math.abs(sumX / cnt - cx) / (bW / 2);
+          symCount++;
+        }
+      }
+      const symmetry = symCount > 0 ? symScore / symCount : 0;
+
+      const score = [
+        avg(normW.slice(0, 3)) < avg(normW.slice(3, 13)) * 0.75,
+        variance(normW.slice(3, 13)) < 0.06,
+        symmetry > 0.70,
+        aspect > 1.8,
+        avg(normW.slice(13)) > 0.4,
+      ].filter(Boolean).length;
+
+      if (score >= 4) {
+        return `phallic shape (score ${score}/5, aspect ${aspect.toFixed(1)}, sym ${(symmetry*100).toFixed(0)}%)`;
+      }
+      return null;
+    }
+
+    // ── Breast shape detection ────────────────────────────────────────────
+    function checkBreasts(pixels, W, H) {
+      const { ink, count } = buildInkMask(pixels, W, H);
+      if (count < 500) return null;
+
+      const { minX, maxX, minY, maxY, bW, bH } = inkBounds(ink, W, H);
+      if (bW < 20 || bH < 20) return null;
+
+      const aspect = bW / bH;
+      if (aspect < 0.8) return null;
+
+      const midX = Math.round((minX + maxX) / 2);
+      const midY = Math.round((minY + maxY) / 2);
+
+      function halfFill(xStart, xEnd) {
+        let filled = 0, total = 0;
+        for (let y = minY; y <= maxY; y++) {
+          for (let x = xStart; x <= xEnd; x++) {
+            total++;
+            if (ink[y * W + x]) filled++;
+          }
+        }
+        return total > 0 ? filled / total : 0;
+      }
+
+      const leftFill  = halfFill(minX, midX - 1);
+      const rightFill = halfFill(midX + 1, maxX);
+      if (leftFill < 0.08 || rightFill < 0.08) return null;
+
+      const valleyW    = Math.max(2, Math.round(bW * 0.06));
+      const valleyFill = halfFill(midX - valleyW, midX + valleyW);
+      const hasValley  = valleyFill < leftFill * 0.7 && valleyFill < rightFill * 0.7;
+
+      function vertHalfFill(yStart, yEnd) {
+        let filled = 0, total = 0;
+        for (let y = yStart; y <= yEnd; y++) {
+          for (let x = minX; x <= maxX; x++) {
+            total++;
+            if (ink[y * W + x]) filled++;
+          }
+        }
+        return total > 0 ? filled / total : 0;
+      }
+      const topHeavy = vertHalfFill(minY, midY-1) > vertHalfFill(midY+1, maxY) * 1.1;
+
+      // Horizontal symmetry
+      let symRows = 0, symTotal = 0;
+      for (let y = minY; y <= maxY; y++) {
+        let lInk = -1, rInk = -1;
+        for (let x = minX; x <= maxX; x++) {
+          if (ink[y * W + x]) { if (lInk < 0) lInk = x; rInk = x; }
+        }
+        if (lInk < 0) continue;
+        const distL = midX - lInk, distR = rInk - midX;
+        const maxD  = Math.max(distL, distR) || 1;
+        symRows  += 1 - Math.abs(distL - distR) / maxD;
+        symTotal++;
+      }
+      const symmetry = symTotal > 0 ? symRows / symTotal : 0;
+
+      // Lobe roundness
+      function halfAspect(xStart, xEnd) {
+        let hMinY = H, hMaxY = 0, hMinX = W, hMaxX = 0;
+        for (let y = minY; y <= maxY; y++) {
+          for (let x = xStart; x <= xEnd; x++) {
+            if (ink[y * W + x]) {
+              if (y < hMinY) hMinY = y; if (y > hMaxY) hMaxY = y;
+              if (x < hMinX) hMinX = x; if (x > hMaxX) hMaxX = x;
+            }
+          }
+        }
+        const hw = hMaxX-hMinX+1, hh = hMaxY-hMinY+1;
+        return hw > 0 && hh > 0 ? Math.max(hw, hh) / Math.min(hw, hh) : 99;
+      }
+      const bothRound = halfAspect(minX, midX-1) < 2.5 && halfAspect(midX+1, maxX) < 2.5;
+
+      const score = [
+        hasValley, topHeavy, symmetry > 0.60,
+        bothRound, leftFill > 0.12, rightFill > 0.12,
+      ].filter(Boolean).length;
+
+      if (score >= 4) {
+        return `breast shape (score ${score}/6, sym ${(symmetry*100).toFixed(0)}%, aspect ${aspect.toFixed(1)})`;
+      }
+      return null;
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────
+    function avg(arr)      { return arr.reduce((a,b) => a+b, 0) / (arr.length || 1); }
+    function variance(arr) { const m = avg(arr); return avg(arr.map(x => (x-m)**2)); }
+
+    function loadImage(src) {
+      return new Promise((res, rej) => {
+        const img = new Image();
+        img.onload  = () => res(img);
+        img.onerror = () => rej(new Error("Image load failed"));
+        img.src = src;
+      });
+    }
+
+    function log(cls, msg) {
+      const line = document.createElement("div");
+      line.className   = cls;
+      line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      logEl.prepend(line);
+      while (logEl.children.length > 200) logEl.removeChild(logEl.lastChild);
+    }
+  </script>
+</body>
+</html>

@@ -30,7 +30,6 @@
         flex-direction: column;
       }
 
-      /* ── Canvas area ─────────────────────────────────────── */
       #canvas-wrap {
         flex: 1;
         position: relative;
@@ -45,7 +44,6 @@
         height: 100%;
       }
 
-      /* ── Swipe reminder ──────────────────────────────────── */
       #swipe-reminder {
         position: absolute;
         bottom: 0;
@@ -82,7 +80,6 @@
         }
       }
 
-      /* ── Bottom UI bar ───────────────────────────────────── */
       #ui {
         background: #1a1a2e;
         padding: 16px 20px 28px;
@@ -122,7 +119,6 @@
         transform: scale(0.9);
       }
 
-      /* ── Thickness slider row ────────────────────────────── */
       #thickness-row {
         display: flex;
         align-items: center;
@@ -164,17 +160,16 @@
         transform: scale(1.15);
       }
 
-      /* ── Buttons row ─────────────────────────────────────── */
       #bottom-row {
         display: flex;
-        gap: 12px;
+        gap: 10px;
       }
 
       button {
         font-family: "Nunito", sans-serif;
-        font-size: 21px;
+        font-size: 20px;
         font-weight: 900;
-        padding: 16px 28px;
+        padding: 16px 10px;
         border: none;
         border-radius: 18px;
         cursor: pointer;
@@ -190,12 +185,22 @@
         opacity: 0.85;
       }
 
-      #clear {
-        background: rgba(255, 255, 255, 0.1);
-        color: rgba(255, 255, 255, 0.65);
+      #undo {
+        background: rgba(255, 255, 255, 0.12);
+        color: rgba(255, 255, 255, 0.8);
       }
 
-      /* ── Launch flash ────────────────────────────────────── */
+      #undo:disabled {
+        opacity: 0.28;
+        cursor: default;
+        transform: none !important;
+      }
+
+      #clear {
+        background: rgba(255, 255, 255, 0.08);
+        color: rgba(255, 255, 255, 0.5);
+      }
+
       #launch-flash {
         position: fixed;
         inset: 0;
@@ -221,49 +226,6 @@
       </div>
     </div>
 
-    <!-- PASTELS -->
-    <!-- <div id="ui">
-      <div id="color-row">
-        <div
-          class="color"
-          style="background: #ffaafa"
-          data-color="#FFAAFA"
-        ></div>
-        <div
-          class="color"
-          style="background: #a8f48a"
-          data-color="#A8F48A"
-        ></div>
-        <div
-          class="color"
-          style="background: #feffaf"
-          data-color="#FEFFAF"
-        ></div>
-        <div
-          class="color"
-          style="background: #b5dbff"
-          data-color="#B5DBFF"
-        ></div>
-        <div
-          class="color"
-          style="background: #251f1b; border-color: rgba(255, 255, 255, 0.4)"
-          data-color="#251F1B"
-        ></div>
-      </div> -->
-
-      <div id="thickness-row">
-        <div class="pen-icon" style="width: 12px; height: 12px"></div>
-        <input id="thickness" type="range" min="4" max="80" value="24" />
-        <div class="pen-icon" style="width: 30px; height: 30px"></div>
-      </div>
-
-      <div id="bottom-row">
-        <button id="clear">🗑&nbsp; Clear</button>
-      </div>
-    </div>
-
-    <!-- BRIGHTS -->
-     
     <div id="ui">
       <div id="color-row">
         <div
@@ -298,8 +260,8 @@
         ></div>
         <div
           class="color"
-          style="background: #ffffff; border-color: rgba(255, 255, 255, 0.4)"
-          data-color="#ffffff"
+          style="background: #2b2b2b; border-color: rgba(255, 255, 255, 0.4)"
+          data-color="#2b2b2b"
         ></div>
       </div>
 
@@ -310,9 +272,10 @@
       </div>
 
       <div id="bottom-row">
-        <button id="clear">🗑&nbsp; Clear</button>
+        <button id="undo" disabled>↩ Undo</button>
+        <button id="clear">🗑 Clear</button>
       </div>
-    </div> 
+    </div>
 
     <div id="launch-flash"></div>
 
@@ -323,31 +286,79 @@
       const canvas = document.getElementById("canvas");
       const ctx = canvas.getContext("2d");
       const flash = document.getElementById("launch-flash");
+      const undoBtn = document.getElementById("undo");
 
       let currentColor = "#ff3b3b";
       let currentThickness = 24;
 
-      // ── High-DPI canvas ──────────────────────────────────────────────────
+      // ── Undo stack ────────────────────────────────────────────────────────
+      // KEY FIX: We snapshot the raw canvas pixel buffer (canvas.width × canvas.height
+      // in device pixels), then restore with putImageData at (0,0) in raw pixel space
+      // BEFORE the ctx transform is applied. This works correctly on HiDPI / retina
+      // displays where canvas.width = cssWidth * devicePixelRatio.
+      //
+      // We temporarily reset the transform to identity for both get and put so that
+      // the pixel coordinates are always in raw canvas space, not scaled CSS space.
+
+      const MAX_HISTORY = 20;
+      let undoStack = [];
+
+      function pushHistory() {
+        // Reset transform so getImageData reads raw pixels correctly
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        const snap = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        ctx.restore();
+
+        undoStack.push(snap);
+        if (undoStack.length > MAX_HISTORY) undoStack.shift();
+        undoBtn.disabled = false;
+      }
+
+      function undo() {
+        if (undoStack.length === 0) return;
+        const snap = undoStack.pop();
+
+        // Reset transform so putImageData writes raw pixels correctly,
+        // then restore the DPR transform so subsequent drawing still works
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.putImageData(snap, 0, 0);
+        ctx.restore();
+
+        undoBtn.disabled = undoStack.length === 0;
+      }
+
+      undoBtn.addEventListener("click", undo);
+
+      // ── High-DPI canvas setup ─────────────────────────────────────────────
       function resize() {
         const dpr = window.devicePixelRatio || 1;
         const wrap = document.getElementById("canvas-wrap");
         const w = wrap.clientWidth;
         const h = wrap.clientHeight;
+
         canvas.width = w * dpr;
         canvas.height = h * dpr;
         canvas.style.width = w + "px";
         canvas.style.height = h + "px";
+
+        // Apply DPR scale so CSS-coordinate drawing works naturally
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
         ctx.strokeStyle = currentColor;
         ctx.lineWidth = currentThickness;
+
+        // Resize invalidates all snapshots (they're the wrong pixel dimensions now)
+        undoStack = [];
+        undoBtn.disabled = true;
       }
 
       resize();
       window.addEventListener("resize", resize);
 
-      // ── Drawing input ────────────────────────────────────────────────────
+      // ── Drawing ───────────────────────────────────────────────────────────
       let drawing = false;
 
       canvas.addEventListener("pointerdown", (e) => {
@@ -365,13 +376,22 @@
       });
 
       canvas.addEventListener("pointerup", (e) => {
-        if (e.isPrimary) drawing = false;
-      });
-      canvas.addEventListener("pointerleave", (e) => {
-        if (e.isPrimary) drawing = false;
+        if (!e.isPrimary) return;
+        if (drawing) {
+          drawing = false;
+          pushHistory();
+        }
       });
 
-      // ── Color pickers ────────────────────────────────────────────────────
+      canvas.addEventListener("pointerleave", (e) => {
+        if (!e.isPrimary) return;
+        if (drawing) {
+          drawing = false;
+          pushHistory();
+        }
+      });
+
+      // ── Color & thickness ─────────────────────────────────────────────────
       document.querySelectorAll(".color").forEach((el) => {
         el.addEventListener("click", () => {
           document
@@ -383,18 +403,19 @@
         });
       });
 
-      // ── Thickness ────────────────────────────────────────────────────────
       document.getElementById("thickness").addEventListener("input", (e) => {
         currentThickness = +e.target.value;
         ctx.lineWidth = currentThickness;
       });
 
-      // ── Clear ────────────────────────────────────────────────────────────
+      // ── Clear ─────────────────────────────────────────────────────────────
       document.getElementById("clear").onclick = () => {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
+        undoStack = [];
+        undoBtn.disabled = true;
       };
 
-      // ── Two-finger swipe-up to launch ────────────────────────────────────
+      // ── Two-finger swipe-up to launch ─────────────────────────────────────
       let touchStartX, touchStartY, touchStartTime;
 
       canvas.addEventListener(
@@ -426,24 +447,24 @@
           endY /= e.changedTouches.length;
 
           const elapsed = Date.now() - touchStartTime;
-          const dx = endX - touchStartX;
           const dy = endY - touchStartY;
+          const dx = endX - touchStartX;
 
           const isSwipeUp =
             dy < -80 && Math.abs(dy) > Math.abs(dx) * 1.5 && elapsed < 600;
 
           if (isSwipeUp) {
-            const speed = Math.abs(dy) / elapsed;
-
             flash.classList.add("flash");
             setTimeout(() => flash.classList.remove("flash"), 180);
 
             socket.emit("drawing", {
               imageData: canvas.toDataURL("image/png"),
-              throwSpeed: speed,
+              throwSpeed: Math.abs(dy) / elapsed,
             });
 
             ctx.clearRect(0, 0, canvas.width, canvas.height);
+            undoStack = [];
+            undoBtn.disabled = true;
           }
 
           touchStartY = undefined;

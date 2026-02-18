@@ -7,17 +7,18 @@
       body {
         margin: 0;
         overflow: hidden;
-        background: white;
+        background: black;
       }
     </style>
   </head>
-
   <body>
     <script src="https://cdn.jsdelivr.net/npm/three@0.157/build/three.min.js"></script>
     <script src="/socket.io/socket.io.js"></script>
 
     <script>
       const socket = io();
+      socket.on("connect", () => socket.emit("register", "projector"));
+
       const scene = new THREE.Scene();
 
       const camera = new THREE.OrthographicCamera(
@@ -48,13 +49,13 @@
         renderer.setSize(window.innerWidth, window.innerHeight);
       });
 
-      const drawings = [];
+      // drawings is now a Map from drawingId → mesh so we can find by ID quickly
+      const drawingMap = new Map();
+      const drawings = []; // ordered list for iteration / MAX check
       const MAX_DRAWINGS = 30;
+      const TRAIL_LENGTH = 5;
 
-      // ── Trail system ─────────────────────────────────────────────────────
-      // Each drawing keeps a small pool of ghost meshes behind it.
-      const TRAIL_LENGTH = 5; // ghost copies per drawing
-
+      // ── Trail helpers ─────────────────────────────────────────────────
       function createTrailMesh(material, geometry) {
         const mat = material.clone();
         mat.opacity = 0;
@@ -63,10 +64,21 @@
         return mesh;
       }
 
-      // ── Receive drawing ───────────────────────────────────────────────────
-      socket.on("newDrawing", ({ imageData, throwSpeed }) => {
-        const loader = new THREE.TextureLoader();
+      function disposeMesh(mesh) {
+        mesh.userData.trail.forEach((t) => {
+          scene.remove(t.mesh);
+          t.mesh.geometry.dispose();
+          t.mesh.material.dispose();
+        });
+        scene.remove(mesh);
+        mesh.geometry.dispose();
+        mesh.material.map && mesh.material.map.dispose();
+        mesh.material.dispose();
+      }
 
+      // ── Add drawing ───────────────────────────────────────────────────
+      socket.on("newDrawing", ({ id, imageData, throwSpeed }) => {
+        const loader = new THREE.TextureLoader();
         loader.load(imageData, (texture) => {
           texture.minFilter = THREE.LinearFilter;
           texture.magFilter = THREE.LinearFilter;
@@ -84,8 +96,6 @@
           });
 
           const mesh = new THREE.Mesh(geometry, material);
-
-          // Spawn at bottom, slight random x offset
           mesh.position.set(
             (Math.random() - 0.5) * window.innerWidth * 0.5,
             -window.innerHeight / 2 - 200,
@@ -93,119 +103,150 @@
           );
 
           const vy = Math.min(Math.max((throwSpeed || 0.6) * 8, 4), 14);
-
-          // Each drawing randomly gets one of three collision personalities:
-          //   "bounce"  – tries to avoid others, bounces off them
-          //   "ghost"   – passes through everything (50% opacity trails)
-          //   "mixed"   – randomly bounces or ghosts per-collision
           const personalities = ["bounce", "ghost", "mixed"];
-          const personality = personalities[Math.floor(Math.random() * 3)];
 
-          // Morph parameters – each drawing breathes/scales at its own rate
-          const morphSpeed = 0.4 + Math.random() * 0.8; // cycles/sec
-          const morphAmp = 0.04 + Math.random() * 0.06; // scale deviation
-          const morphPhase = Math.random() * Math.PI * 2;
-          const rotationSpeed = (Math.random() - 0.5) * 0.003; // subtle slow spin
-
-          // Build trail pool
           const trail = [];
           for (let i = 0; i < TRAIL_LENGTH; i++) {
-            trail.push({
-              mesh: createTrailMesh(material, geometry),
-              x: mesh.position.x,
-              y: mesh.position.y,
-            });
+            trail.push({ mesh: createTrailMesh(material, geometry) });
           }
 
           mesh.userData = {
+            drawingId: id,
             vx: (Math.random() - 0.5) * 1.5,
             vy,
             wobble: Math.random() * Math.PI * 2,
             launched: true,
             w,
-            h, // collision bounding box half-extents
-            personality,
-            morphSpeed,
-            morphAmp,
-            morphPhase,
-            rotationSpeed,
+            h,
+            personality: personalities[Math.floor(Math.random() * 3)],
+            morphSpeed: 0.4 + Math.random() * 0.8,
+            morphAmp: 0.04 + Math.random() * 0.06,
+            morphPhase: Math.random() * Math.PI * 2,
+            rotationSpeed: (Math.random() - 0.5) * 0.003,
             trail,
-            trailIndex: 0, // ring-buffer cursor
+            trailIndex: 0,
             trailTimer: 0,
+            flagged: false,
+            flagTimer: 0, // used for shake animation
+            removing: false,
+            removeProgress: 0,
           };
 
           scene.add(mesh);
           drawings.push(mesh);
+          drawingMap.set(id, mesh);
 
           if (drawings.length > MAX_DRAWINGS) {
             const old = drawings.shift();
-            // Clean up trail
-            old.userData.trail.forEach((t) => {
-              scene.remove(t.mesh);
-              t.mesh.geometry.dispose();
-              t.mesh.material.dispose();
-            });
-            scene.remove(old);
-            old.geometry.dispose();
-            old.material.map.dispose();
-            old.material.dispose();
+            drawingMap.delete(old.userData.drawingId);
+            disposeMesh(old);
           }
         });
       });
 
-      // ── Collision helpers ─────────────────────────────────────────────────
+      // ── Flag drawing (shake + red tint + start fade countdown) ────────
+      socket.on("flagDrawing", ({ drawingId }) => {
+        const mesh = drawingMap.get(drawingId);
+        if (!mesh) return;
+        mesh.userData.flagged = true;
+        mesh.userData.flagTimer = 0;
 
-      // Simple AABB overlap test (with a small padding so they don't touch)
+        // Tint red
+        mesh.material.color = new THREE.Color(1, 0.3, 0.3);
+
+        // Start auto-fade — matches server's 5s countdown
+        mesh.userData.autoFadeStart = performance.now();
+        mesh.userData.autoFadeDuration = 5000;
+      });
+
+      // ── Pardon drawing (restore normal appearance) ────────────────────
+      socket.on("pardonDrawing", ({ drawingId }) => {
+        const mesh = drawingMap.get(drawingId);
+        if (!mesh) return;
+        mesh.userData.flagged = false;
+        mesh.userData.autoFadeStart = null;
+        mesh.material.color = new THREE.Color(1, 1, 1);
+        mesh.material.opacity = 0.92;
+      });
+
+      // ── Remove drawing (instant clean removal) ────────────────────────
+      socket.on("removeDrawing", (drawingId) => {
+        const mesh = drawingMap.get(drawingId);
+        if (!mesh) return;
+        mesh.userData.removing = true; // animate out in loop
+      });
+
+      // ── Collision helpers ─────────────────────────────────────────────
       const COLLISION_PADDING = 20;
 
       function overlaps(a, b) {
-        const aw = (a.userData.w / 2 + COLLISION_PADDING) * (a.scale.x || 1);
-        const ah = (a.userData.h / 2 + COLLISION_PADDING) * (a.scale.y || 1);
-        const bw = (b.userData.w / 2 + COLLISION_PADDING) * (b.scale.x || 1);
-        const bh = (b.userData.h / 2 + COLLISION_PADDING) * (b.scale.y || 1);
-
+        const aw = (a.userData.w / 2 + COLLISION_PADDING) * a.scale.x;
+        const ah = (a.userData.h / 2 + COLLISION_PADDING) * a.scale.y;
+        const bw = (b.userData.w / 2 + COLLISION_PADDING) * b.scale.x;
+        const bh = (b.userData.h / 2 + COLLISION_PADDING) * b.scale.y;
         return (
           Math.abs(a.position.x - b.position.x) < aw + bw &&
           Math.abs(a.position.y - b.position.y) < ah + bh
         );
       }
 
-      // Elastic-ish velocity swap on collision axis
       function bounceVelocities(a, b) {
-        const dx = b.position.x - a.position.x;
-        const dy = b.position.y - a.position.y;
+        const dx = b.position.x - a.position.x || 0.1;
+        const dy = b.position.y - a.position.y || 0.1;
         const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        // normal vector
-        const nx = dx / dist;
-        const ny = dy / dist;
-        // relative velocity along normal
+        const nx = dx / dist,
+          ny = dy / dist;
         const dvn =
           (a.userData.vx - b.userData.vx) * nx +
           (a.userData.vy - b.userData.vy) * ny;
-        if (dvn < 0) return; // already separating
-        // swap along normal
+        if (dvn < 0) return;
         a.userData.vx -= dvn * nx;
         a.userData.vy -= dvn * ny;
         b.userData.vx += dvn * nx;
         b.userData.vy += dvn * ny;
       }
 
-      // ── Animation loop ────────────────────────────────────────────────────
+      // ── Animation loop ────────────────────────────────────────────────
       function animate() {
         requestAnimationFrame(animate);
-
-        // Fade the framebuffer slightly instead of full clear → trail effect
-        // We do this by rendering a near-black full-screen quad each frame
         renderer.clear();
 
         const t = performance.now() * 0.001;
+        const now = performance.now();
 
-        // ── Move all drawings ─────────────────────────────────────────────
+        // Collect meshes to remove after iteration
+        const toRemove = [];
+
         drawings.forEach((d) => {
           const ud = d.userData;
 
+          // ── Removal fade-out ────────────────────────────────────────
+          if (ud.removing) {
+            ud.removeProgress = (ud.removeProgress || 0) + 0.05;
+            d.material.opacity = Math.max(0, 0.92 - ud.removeProgress * 2);
+            d.scale.multiplyScalar(0.96);
+            if (ud.removeProgress > 0.6) toRemove.push(d);
+            return;
+          }
+
+          // ── Auto-fade when flagged ──────────────────────────────────
+          if (ud.flagged && ud.autoFadeStart) {
+            const elapsed = now - ud.autoFadeStart;
+            const frac = Math.min(elapsed / ud.autoFadeDuration, 1);
+            d.material.opacity = 0.92 * (1 - frac * 0.7); // fade to 28% opacity
+          }
+
+          // ── Shake when freshly flagged ──────────────────────────────
+          if (ud.flagged) {
+            ud.flagTimer++;
+            if (ud.flagTimer < 30) {
+              d.position.x += Math.sin(ud.flagTimer * 1.8) * 3;
+            }
+          }
+
+          // ── Movement ───────────────────────────────────────────────
           if (ud.launched) {
-            ud.vy -= 0.12; // deceleration
+            ud.vy -= 0.12;
             d.position.x += ud.vx;
             d.position.y += ud.vy;
             if (Math.abs(ud.vy) < 1.5) {
@@ -218,21 +259,19 @@
             d.position.y += Math.sin(t + ud.wobble) * 0.25;
           }
 
-          // ── Morph / breathe ─────────────────────────────────────────────
-          const breathe =
+          // ── Morph / breathe ─────────────────────────────────────────
+          const b1 =
             1 + Math.sin(t * ud.morphSpeed + ud.morphPhase) * ud.morphAmp;
-          // Also add a very subtle secondary oscillation for organic feel
-          const breathe2 =
+          const b2 =
             1 +
             Math.cos(t * ud.morphSpeed * 1.37 + ud.morphPhase + 1) *
               (ud.morphAmp * 0.4);
-          d.scale.set(breathe * breathe2, breathe, 1);
+          d.scale.set(b1 * b2, b1, 1);
           d.rotation.z += ud.rotationSpeed;
 
-          // ── Trail ────────────────────────────────────────────────────────
+          // ── Trail ───────────────────────────────────────────────────
           ud.trailTimer++;
           if (ud.trailTimer % 3 === 0) {
-            // stamp a ghost every 3 frames
             const ghost = ud.trail[ud.trailIndex % TRAIL_LENGTH];
             ghost.mesh.position.set(d.position.x, d.position.y, -1);
             ghost.mesh.rotation.z = d.rotation.z;
@@ -240,13 +279,11 @@
             ghost.mesh.material.opacity = 0.18;
             ud.trailIndex++;
           }
-
-          // Fade all ghost trail meshes toward zero
-          ud.trail.forEach((ghost) => {
-            ghost.mesh.material.opacity *= 0.82;
+          ud.trail.forEach((g) => {
+            g.mesh.material.opacity *= 0.82;
           });
 
-          // ── Edge wrap ────────────────────────────────────────────────────
+          // ── Edge wrap ───────────────────────────────────────────────
           if (
             Math.abs(d.position.x) > window.innerWidth / 2 + 250 ||
             Math.abs(d.position.y) > window.innerHeight / 2 + 250
@@ -256,48 +293,43 @@
           }
         });
 
-        // ── Collision pass ────────────────────────────────────────────────
-        // Only run for settled (non-launched) drawings to keep throws clean
+        // ── Collision pass ────────────────────────────────────────────
         for (let i = 0; i < drawings.length; i++) {
           const a = drawings[i];
-          if (a.userData.launched) continue;
-
+          if (a.userData.launched || a.userData.removing) continue;
           for (let j = i + 1; j < drawings.length; j++) {
             const b = drawings[j];
-            if (b.userData.launched) continue;
-
+            if (b.userData.launched || b.userData.removing) continue;
             if (!overlaps(a, b)) continue;
 
-            // Decide behaviour based on both personalities
-            const pA = a.userData.personality;
-            const pB = b.userData.personality;
+            const pA = a.userData.personality,
+              pB = b.userData.personality;
+            let bounce = false;
+            if (pA === "bounce" && pB === "bounce") bounce = true;
+            else if (pA === "ghost" || pB === "ghost") bounce = false;
+            else if (pA === "mixed" || pB === "mixed")
+              bounce = Math.random() < 0.5;
 
-            let shouldBounce = false;
-
-            if (pA === "bounce" && pB === "bounce") {
-              shouldBounce = true;
-            } else if (pA === "ghost" || pB === "ghost") {
-              shouldBounce = false; // at least one ghost → pass through
-            } else if (pA === "mixed" || pB === "mixed") {
-              shouldBounce = Math.random() < 0.5; // coin flip each collision
-            }
-
-            if (shouldBounce) {
+            if (bounce) {
               bounceVelocities(a, b);
-
-              // Nudge apart so they don't stick
               const dx = b.position.x - a.position.x || 0.1;
               const dy = b.position.y - a.position.y || 0.1;
               const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-              const push = 2;
-              a.position.x -= (dx / dist) * push;
-              a.position.y -= (dy / dist) * push;
-              b.position.x += (dx / dist) * push;
-              b.position.y += (dy / dist) * push;
+              a.position.x -= (dx / dist) * 2;
+              a.position.y -= (dy / dist) * 2;
+              b.position.x += (dx / dist) * 2;
+              b.position.y += (dy / dist) * 2;
             }
-            // ghost: do nothing → they pass through
           }
         }
+
+        // ── Actually remove flagged-out meshes ────────────────────────
+        toRemove.forEach((d) => {
+          const idx = drawings.indexOf(d);
+          if (idx !== -1) drawings.splice(idx, 1);
+          drawingMap.delete(d.userData.drawingId);
+          disposeMesh(d);
+        });
 
         renderer.render(scene, camera);
       }
