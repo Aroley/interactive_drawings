@@ -1,0 +1,465 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Draw</title>
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta
+      name="apple-mobile-web-app-status-bar-style"
+      content="black-fullscreen"
+    />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
+    />
+
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=Nunito:wght@700;900&display=swap");
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: #f0eee8;
+        font-family: "Nunito", sans-serif;
+        overflow: hidden;
+        height: 100dvh;
+        display: flex;
+        flex-direction: column;
+      }
+
+      #canvas-wrap {
+        flex: 1;
+        position: relative;
+        overflow: hidden;
+      }
+
+      canvas {
+        display: block;
+        touch-action: none;
+        background: white;
+        width: 100%;
+        height: 100%;
+      }
+
+      /* Cursor changes to show eraser mode */
+      canvas.erasing {
+        cursor:
+          url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><circle cx="16" cy="16" r="14" fill="none" stroke="gray" stroke-width="2"/><line x1="8" y1="8" x2="24" y2="24" stroke="red" stroke-width="2"/></svg>')
+            16 16,
+          auto;
+      }
+
+      #swipe-reminder {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        text-align: center;
+        padding: 12px 20px 16px;
+        font-size: 18px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        color: rgba(60, 45, 30, 0.5);
+        background: linear-gradient(
+          to top,
+          rgba(255, 255, 255, 0.96) 55%,
+          transparent
+        );
+        pointer-events: none;
+        user-select: none;
+      }
+
+      #swipe-reminder .arrow {
+        display: inline-block;
+        animation: bob 1.8s ease-in-out infinite;
+        margin-right: 4px;
+      }
+
+      @keyframes bob {
+        0%,
+        100% {
+          transform: translateY(0px);
+        }
+        50% {
+          transform: translateY(-6px);
+        }
+      }
+
+      #ui {
+        background: #1a1a2e;
+        padding: 16px 20px 28px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      #color-row {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        justify-content: center;
+        flex-wrap: wrap;
+      }
+
+      .color {
+        width: 54px;
+        height: 54px;
+        border-radius: 50%;
+        border: 4px solid rgba(255, 255, 255, 0.15);
+        cursor: pointer;
+        transition:
+          transform 0.15s,
+          border-color 0.15s,
+          box-shadow 0.15s;
+        flex-shrink: 0;
+      }
+
+      .color.active {
+        border-color: white;
+        transform: scale(1.2);
+        box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.3);
+      }
+
+      .color:active {
+        transform: scale(0.9);
+      }
+
+      #thickness-row {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 0 4px;
+      }
+
+      .pen-icon {
+        background: white;
+        border-radius: 50%;
+        flex-shrink: 0;
+        opacity: 0.65;
+      }
+
+      input[type="range"] {
+        -webkit-appearance: none;
+        appearance: none;
+        flex: 1;
+        height: 12px;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.18);
+        outline: none;
+        cursor: pointer;
+      }
+
+      input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 42px;
+        height: 42px;
+        border-radius: 50%;
+        background: white;
+        box-shadow: 0 3px 10px rgba(0, 0, 0, 0.5);
+        cursor: pointer;
+        transition: transform 0.1s;
+      }
+
+      input[type="range"]:active::-webkit-slider-thumb {
+        transform: scale(1.15);
+      }
+
+      #bottom-row {
+        display: flex;
+        gap: 10px;
+      }
+
+      button {
+        font-family: "Nunito", sans-serif;
+        font-size: 20px;
+        font-weight: 900;
+        padding: 16px 10px;
+        border: none;
+        border-radius: 18px;
+        cursor: pointer;
+        letter-spacing: 0.02em;
+        transition:
+          transform 0.12s,
+          opacity 0.12s,
+          background 0.15s;
+        flex: 1;
+      }
+
+      button:active {
+        transform: scale(0.93);
+        opacity: 0.85;
+      }
+
+      #eraser {
+        background: rgba(255, 255, 255, 0.12);
+        color: rgba(255, 255, 255, 0.7);
+      }
+
+      #eraser.active {
+        background: rgba(239, 68, 68, 0.25);
+        color: rgba(255, 255, 255, 0.95);
+        border: 2px solid rgba(239, 68, 68, 0.5);
+      }
+
+      #clear {
+        background: rgba(255, 255, 255, 0.08);
+        color: rgba(255, 255, 255, 0.5);
+      }
+
+      #launch-flash {
+        position: fixed;
+        inset: 0;
+        background: rgba(255, 255, 255, 0);
+        pointer-events: none;
+        z-index: 100;
+        transition: background 0.07s;
+      }
+
+      #launch-flash.flash {
+        background: rgba(255, 255, 255, 0.5);
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="canvas-wrap">
+      <canvas id="canvas"></canvas>
+      <div id="swipe-reminder">
+        <span class="arrow">👆</span
+        ><span class="arrow" style="animation-delay: 0.2s">👆</span>
+        two-finger swipe up to launch your drawing
+      </div>
+    </div>
+
+    <div id="ui">
+      <div id="color-row">
+        <div
+          class="color active"
+          style="background: #ff3b3b"
+          data-color="#ff3b3b"
+        ></div>
+        <div
+          class="color"
+          style="background: #ff6d00"
+          data-color="#ff6d00"
+        ></div>
+        <div
+          class="color"
+          style="background: #ffcc00"
+          data-color="#ffcc00"
+        ></div>
+        <div
+          class="color"
+          style="background: #00e676"
+          data-color="#00e676"
+        ></div>
+        <div
+          class="color"
+          style="background: #00b0ff"
+          data-color="#00b0ff"
+        ></div>
+        <div
+          class="color"
+          style="background: #d500f9"
+          data-color="#d500f9"
+        ></div>
+        <div
+          class="color"
+          style="background: #ffffff; border-color: rgba(255, 255, 255, 0.4)"
+          data-color="#ffffff"
+        ></div>
+        <div
+          class="color"
+          style="background: #000000; border-color: rgba(0, 0, 0, 0.4)"
+          data-color="#000000"
+        ></div>
+      </div>
+
+      <div id="thickness-row">
+        <div class="pen-icon" style="width: 12px; height: 12px"></div>
+        <input id="thickness" type="range" min="4" max="80" value="24" />
+        <div class="pen-icon" style="width: 30px; height: 30px"></div>
+      </div>
+
+      <div id="bottom-row">
+        <button id="eraser">🧽 Eraser</button>
+        <button id="clear">🗑 Clear</button>
+      </div>
+    </div>
+
+    <div id="launch-flash"></div>
+
+    <script src="/socket.io/socket.io.js"></script>
+
+    <script>
+      const socket = io();
+      const canvas = document.getElementById("canvas");
+      const ctx = canvas.getContext("2d");
+      const flash = document.getElementById("launch-flash");
+      const eraserBtn = document.getElementById("eraser");
+
+      let currentColor = "#ff3b3b";
+      let currentThickness = 24;
+      let eraserMode = false;
+
+      // ── High-DPI canvas setup ─────────────────────────────────────────────
+      function resize() {
+        const dpr = window.devicePixelRatio || 1;
+        const wrap = document.getElementById("canvas-wrap");
+        const w = wrap.clientWidth;
+        const h = wrap.clientHeight;
+
+        canvas.width = w * dpr;
+        canvas.height = h * dpr;
+        canvas.style.width = w + "px";
+        canvas.style.height = h + "px";
+
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+
+        applyDrawMode();
+      }
+
+      function applyDrawMode() {
+        if (eraserMode) {
+          // Eraser uses destination-out composite mode
+          ctx.globalCompositeOperation = "destination-out";
+          ctx.strokeStyle = "rgba(0,0,0,1)"; // opacity doesn't matter in dest-out
+          ctx.lineWidth = currentThickness;
+          canvas.classList.add("erasing");
+        } else {
+          // Normal drawing
+          ctx.globalCompositeOperation = "source-over";
+          ctx.strokeStyle = currentColor;
+          ctx.lineWidth = currentThickness;
+          canvas.classList.remove("erasing");
+        }
+      }
+
+      resize();
+      window.addEventListener("resize", resize);
+
+      // ── Eraser toggle ─────────────────────────────────────────────────────
+      eraserBtn.addEventListener("click", () => {
+        eraserMode = !eraserMode;
+        eraserBtn.classList.toggle("active", eraserMode);
+        eraserBtn.textContent = eraserMode ? "✏️ Pen" : "🧽 Eraser";
+        applyDrawMode();
+      });
+
+      // ── Drawing ───────────────────────────────────────────────────────────
+      let drawing = false;
+
+      canvas.addEventListener("pointerdown", (e) => {
+        if (e.isPrimary) {
+          drawing = true;
+          ctx.beginPath();
+          ctx.moveTo(e.clientX, e.clientY);
+        }
+      });
+
+      canvas.addEventListener("pointermove", (e) => {
+        if (!drawing || !e.isPrimary) return;
+        ctx.lineTo(e.clientX, e.clientY);
+        ctx.stroke();
+      });
+
+      canvas.addEventListener("pointerup", (e) => {
+        if (e.isPrimary) drawing = false;
+      });
+
+      canvas.addEventListener("pointerleave", (e) => {
+        if (e.isPrimary) drawing = false;
+      });
+
+      // ── Color & thickness ─────────────────────────────────────────────────
+      document.querySelectorAll(".color").forEach((el) => {
+        el.addEventListener("click", () => {
+          // Picking a color auto-switches back to pen mode
+          if (eraserMode) {
+            eraserMode = false;
+            eraserBtn.classList.remove("active");
+            eraserBtn.textContent = "🧽 Eraser";
+          }
+
+          document
+            .querySelectorAll(".color")
+            .forEach((c) => c.classList.remove("active"));
+          el.classList.add("active");
+          currentColor = el.dataset.color;
+          applyDrawMode();
+        });
+      });
+
+      document.getElementById("thickness").addEventListener("input", (e) => {
+        currentThickness = +e.target.value;
+        applyDrawMode();
+      });
+
+      // ── Clear ─────────────────────────────────────────────────────────────
+      document.getElementById("clear").onclick = () => {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      };
+
+      // ── Two-finger swipe-up to launch ─────────────────────────────────────
+      let touchStartX, touchStartY, touchStartTime;
+
+      canvas.addEventListener(
+        "touchstart",
+        (e) => {
+          if (e.touches.length === 2) {
+            drawing = false;
+            touchStartX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+            touchStartY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+            touchStartTime = Date.now();
+            e.preventDefault();
+          }
+        },
+        { passive: false },
+      );
+
+      canvas.addEventListener(
+        "touchend",
+        (e) => {
+          if (touchStartY === undefined || e.touches.length > 0) return;
+
+          let endX = 0,
+            endY = 0;
+          for (let i = 0; i < e.changedTouches.length; i++) {
+            endX += e.changedTouches[i].clientX;
+            endY += e.changedTouches[i].clientY;
+          }
+          endX /= e.changedTouches.length;
+          endY /= e.changedTouches.length;
+
+          const elapsed = Date.now() - touchStartTime;
+          const dy = endY - touchStartY;
+          const dx = endX - touchStartX;
+
+          const isSwipeUp =
+            dy < -80 && Math.abs(dy) > Math.abs(dx) * 1.5 && elapsed < 600;
+
+          if (isSwipeUp) {
+            flash.classList.add("flash");
+            setTimeout(() => flash.classList.remove("flash"), 180);
+
+            socket.emit("drawing", {
+              imageData: canvas.toDataURL("image/png"),
+              throwSpeed: Math.abs(dy) / elapsed,
+            });
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+          }
+
+          touchStartY = undefined;
+        },
+        { passive: false },
+      );
+    </script>
+  </body>
+</html>
