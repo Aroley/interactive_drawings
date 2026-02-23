@@ -62,7 +62,6 @@ const BLOCKED_WORDS = [
   "bitch",
   "bastard",
   "asshole",
-  "arsch",
 
   // Sexual/explicit anatomy
   "penis",
@@ -75,8 +74,6 @@ const BLOCKED_WORDS = [
   "testicle",
   "nut",
   "nuts",
-  "arschloch",
-  "hurensohn",
   "vagina",
   "pussy",
   "cunt",
@@ -95,18 +92,6 @@ const BLOCKED_WORDS = [
   "butthole",
   "anus",
   "rectum",
-  "figg",
-  "figge",
-  "fick",
-  "ficken",
-  "acab",
-  "peinlich",
-  "huren",
-  "hure",
-  "wixer",
-  "wixxer",
-  "arsch",
-  "fotze",
 
   // Sexual acts/content
   "porn",
@@ -127,7 +112,6 @@ const BLOCKED_WORDS = [
   "masturbate",
   "jerk",
   "wank",
-  "sperma",
 
   // Bodily functions (often used inappropriately)
   "piss",
@@ -150,31 +134,58 @@ const BLOCKED_WORDS = [
   "blood",
   "hurt",
   "pain",
-  "stirb",
-  "töte",
-  "mord",
-  "schieß",
-  "messer",
-  "tod",
-  "waffe",
 
-  // Hate speech triggers (expand based on context)
-  "hate",
-  "stupid",
-  "idiot",
-  "retard",
-  "loser",
-  "neger",
-  "nigga",
+  // Hate speech/slurs (racial, ethnic, religious)
   "nigger",
+  "nigga",
+  "nig",
+  "negro",
+  "chink",
+  "gook",
+  "jap",
+  "zipperhead",
+  "spic",
+  "beaner",
+  "wetback",
+  "greaser",
+  "kike",
+  "heeb",
+  "hymie",
+  "raghead",
+  "towelhead",
+  "sandnigger",
+  "terrorist",
+  "cracker",
+  "honky",
+  "whitey",
+  "redneck",
+  "faggot",
+  "fag",
+  "dyke",
+  "tranny",
+  "queer",
+  "retard",
+  "retarded",
+  "autist",
+  "autistic",
+  "sperg",
 
-  // Drug references
-  "weed",
-  "drug",
-  "cocaine",
-  "heroin",
-  "meth",
-  "droge",
+  // Hate groups and symbols (text-based)
+  "kkk",
+  "klan",
+  "nazi",
+  "hitler",
+  "heil",
+  "white power",
+  "aryan",
+  "supremacy",
+
+  // Hate symbol codes
+  "88",
+  "1488",
+  "14",
+  "18", // Nazi codes (88=HH=Heil Hitler, 14=14 words, 18=AH=Adolf Hitler)
+  "ss", // SS bolts
 
   // Common misspellings/leetspeak
   "fuk",
@@ -189,6 +200,113 @@ const BLOCKED_WORDS = [
   "a55",
   "p3nis",
   "c0ck",
+  "n1gger",
+  "n1gga",
+  "f4g",
+  "f4ggot",
+
+  // Drug references
+  "weed",
+  "drug",
+  "cocaine",
+  "heroin",
+  "meth",
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // GERMAN / DEUTSCH
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // Profanity (German)
+  "scheiße",
+  "scheisse",
+  "scheiss",
+  "kacke",
+  "mist",
+  "verdammt",
+  "verflucht",
+  "arsch",
+  "arschloch",
+  "fotze",
+  "votze",
+  "hurensohn",
+  "wichser",
+  "pisser",
+
+  // Sexual/explicit (German)
+  "schwanz",
+  "pimmel",
+  "eier",
+  "hoden",
+  "muschi",
+  "möse",
+  "fotze",
+  "titten",
+  "brüste",
+  "busen",
+  "nippel",
+  "hintern",
+  "po",
+  "popo",
+
+  // Sexual acts (German)
+  "ficken",
+  "fick",
+  "gefickt",
+  "bumsen",
+  "vögeln",
+  "vergewaltigung",
+  "nackt",
+  "geil",
+  "wichsen",
+  "blasen",
+
+  // Bodily functions (German)
+  "pissen",
+  "pinkeln",
+  "scheißen",
+  "furzen",
+  "kotzen",
+
+  // Violence (German)
+  "töten",
+  "mord",
+  "sterben",
+  "tot",
+  "blut",
+  "schmerz",
+  "waffe",
+  "messer",
+
+  // Hate speech/slurs (German)
+  "neger",
+  "kanake",
+  "türke",
+  "ausländer",
+  "schwuchtel",
+  "schwuler",
+  "tunte",
+  "lesbe",
+  "mongo",
+  "spast",
+  "spasti",
+  "behindert",
+  "behinderter",
+  "idiot",
+  "vollidiot",
+  "trottel",
+  "depp",
+
+  // Hate groups/symbols (German)
+  "nsdap",
+  "hakenkreuz",
+  "sieg heil",
+
+  // German leetspeak/misspellings
+  "sch3isse",
+  "f1cken",
+  "f0tze",
+  "arsch1och",
+  "h1tler",
 ];
 
 async function runOCR(imageDataUrl) {
@@ -212,10 +330,10 @@ async function runOCR(imageDataUrl) {
 
     console.log("[ocr] Detected text:", text.substring(0, 100));
 
-    // Normalize: lowercase, remove punctuation, split into words
+    // Normalize: lowercase, keep German characters (äöüß), remove other punctuation
     const words = text
       .toLowerCase()
-      .replace(/[^a-z\s]/g, " ")
+      .replace(/[^a-zäöüß\s]/g, " ") // Keep German special characters
       .split(/\s+/)
       .filter((w) => w.length > 1); // Ignore single letters
 
@@ -239,7 +357,7 @@ const pendingScans = new Map(); // scanId → { drawingId, imageData, resolve }
 let scannerSocket = null;
 let scanIdCounter = 0;
 
-const AUTO_REMOVE_MS = 5000; // 5 seconds
+const AUTO_REMOVE_MS = 1000; // 1 second - fast removal
 const autoRemoveTimers = new Map();
 
 // ── Admin broadcast ───────────────────────────────────────────────────────

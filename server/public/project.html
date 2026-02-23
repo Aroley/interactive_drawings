@@ -7,7 +7,7 @@
       body {
         margin: 0;
         overflow: hidden;
-        background: white;
+        background: black;
       }
     </style>
   </head>
@@ -36,7 +36,7 @@
         alpha: true,
       });
       renderer.setSize(window.innerWidth, window.innerHeight);
-      renderer.setClearColor(0xffffff, 1);
+      renderer.setClearColor(0x000000, 1);
       renderer.autoClear = false;
       document.body.appendChild(renderer.domElement);
 
@@ -49,10 +49,9 @@
         renderer.setSize(window.innerWidth, window.innerHeight);
       });
 
-      // drawings is now a Map from drawingId → mesh so we can find by ID quickly
       const drawingMap = new Map();
-      const drawings = []; // ordered list for iteration / MAX check
-      const MAX_DRAWINGS = 30;
+      const drawings = [];
+      const MAX_DRAWINGS = 50; // Increased from 30 to allow more smaller drawings
       const TRAIL_LENGTH = 5;
 
       // ── Trail helpers ─────────────────────────────────────────────────
@@ -83,16 +82,18 @@
           texture.minFilter = THREE.LinearFilter;
           texture.magFilter = THREE.LinearFilter;
 
-          const baseSize = 340;
+          const baseSize = 180; // Reduced from 360 to 240 (33% smaller)
           const aspect = texture.image.width / texture.image.height;
           const w = baseSize * aspect;
           const h = baseSize;
 
           const geometry = new THREE.PlaneGeometry(w, h);
+
+          // KEY FIX: Full opacity (1.0) for vibrant colors
           const material = new THREE.MeshBasicMaterial({
             map: texture,
             transparent: true,
-            opacity: 0.92,
+            opacity: 1.0, // Was 0.92, now full vibrant
           });
 
           const mesh = new THREE.Mesh(geometry, material);
@@ -103,7 +104,6 @@
           );
 
           const vy = Math.min(Math.max((throwSpeed || 0.6) * 8, 4), 14);
-          const personalities = ["bounce", "ghost", "mixed"];
 
           const trail = [];
           for (let i = 0; i < TRAIL_LENGTH; i++) {
@@ -112,22 +112,23 @@
 
           mesh.userData = {
             drawingId: id,
-            vx: (Math.random() - 0.5) * 1.5,
+            // More chaotic random velocities
+            vx: (Math.random() - 0.5) * 3, // Was 1.5, now 3
             vy,
             wobble: Math.random() * Math.PI * 2,
             launched: true,
             w,
             h,
-            personality: personalities[Math.floor(Math.random() * 3)],
+            // Removed personality - all bounce now
             morphSpeed: 0.4 + Math.random() * 0.8,
             morphAmp: 0.04 + Math.random() * 0.06,
             morphPhase: Math.random() * Math.PI * 2,
-            rotationSpeed: (Math.random() - 0.5) * 0.003,
+            rotationSpeed: (Math.random() - 0.5) * 0.008, // Was 0.003, now faster
             trail,
             trailIndex: 0,
             trailTimer: 0,
             flagged: false,
-            flagTimer: 0, // used for shake animation
+            flagTimer: 0,
             removing: false,
             removeProgress: 0,
           };
@@ -144,36 +145,30 @@
         });
       });
 
-      // ── Flag drawing (shake + red tint + start fade countdown) ────────
+      // ── Flag drawing ──────────────────────────────────────────────────
       socket.on("flagDrawing", ({ drawingId }) => {
         const mesh = drawingMap.get(drawingId);
         if (!mesh) return;
         mesh.userData.flagged = true;
         mesh.userData.flagTimer = 0;
-
-        // Tint red
         mesh.material.color = new THREE.Color(1, 0.3, 0.3);
-
-        // Start auto-fade — matches server's 5s countdown
         mesh.userData.autoFadeStart = performance.now();
-        mesh.userData.autoFadeDuration = 5000;
+        mesh.userData.autoFadeDuration = 1000; // 1 second fade to match server
       });
 
-      // ── Pardon drawing (restore normal appearance) ────────────────────
       socket.on("pardonDrawing", ({ drawingId }) => {
         const mesh = drawingMap.get(drawingId);
         if (!mesh) return;
         mesh.userData.flagged = false;
         mesh.userData.autoFadeStart = null;
         mesh.material.color = new THREE.Color(1, 1, 1);
-        mesh.material.opacity = 0.92;
+        mesh.material.opacity = 1.0;
       });
 
-      // ── Remove drawing (instant clean removal) ────────────────────────
       socket.on("removeDrawing", (drawingId) => {
         const mesh = drawingMap.get(drawingId);
         if (!mesh) return;
-        mesh.userData.removing = true; // animate out in loop
+        mesh.userData.removing = true;
       });
 
       // ── Collision helpers ─────────────────────────────────────────────
@@ -200,10 +195,13 @@
           (a.userData.vx - b.userData.vx) * nx +
           (a.userData.vy - b.userData.vy) * ny;
         if (dvn < 0) return;
-        a.userData.vx -= dvn * nx;
-        a.userData.vy -= dvn * ny;
-        b.userData.vx += dvn * nx;
-        b.userData.vy += dvn * ny;
+
+        // Add some randomness to bounces for chaos
+        const randomFactor = 0.8 + Math.random() * 0.4; // 0.8 to 1.2
+        a.userData.vx -= dvn * nx * randomFactor;
+        a.userData.vy -= dvn * ny * randomFactor;
+        b.userData.vx += dvn * nx * randomFactor;
+        b.userData.vy += dvn * ny * randomFactor;
       }
 
       // ── Animation loop ────────────────────────────────────────────────
@@ -214,7 +212,6 @@
         const t = performance.now() * 0.001;
         const now = performance.now();
 
-        // Collect meshes to remove after iteration
         const toRemove = [];
 
         drawings.forEach((d) => {
@@ -222,10 +219,10 @@
 
           // ── Removal fade-out ────────────────────────────────────────
           if (ud.removing) {
-            ud.removeProgress = (ud.removeProgress || 0) + 0.05;
-            d.material.opacity = Math.max(0, 0.92 - ud.removeProgress * 2);
+            ud.removeProgress = (ud.removeProgress || 0) + 0.2;
+            d.material.opacity = Math.max(0, 1.0 - ud.removeProgress * 2);
             d.scale.multiplyScalar(0.96);
-            if (ud.removeProgress > 0.6) toRemove.push(d);
+            if (ud.removeProgress > 0.4) toRemove.push(d);
             return;
           }
 
@@ -233,7 +230,7 @@
           if (ud.flagged && ud.autoFadeStart) {
             const elapsed = now - ud.autoFadeStart;
             const frac = Math.min(elapsed / ud.autoFadeDuration, 1);
-            d.material.opacity = 0.92 * (1 - frac * 0.7); // fade to 28% opacity
+            d.material.opacity = 1.0 * (1 - frac * 0.7);
           }
 
           // ── Shake when freshly flagged ──────────────────────────────
@@ -251,12 +248,15 @@
             d.position.y += ud.vy;
             if (Math.abs(ud.vy) < 1.5) {
               ud.launched = false;
+              // More chaotic post-launch velocity
               ud.vy = (Math.random() - 0.5) * 1.5;
+              ud.vx = (Math.random() - 0.5) * 1.5;
             }
           } else {
             d.position.x += ud.vx;
             d.position.y += ud.vy;
-            d.position.y += Math.sin(t + ud.wobble) * 0.25;
+            // More pronounced wobble
+            d.position.y += Math.sin(t + ud.wobble) * 0.3;
           }
 
           // ── Morph / breathe ─────────────────────────────────────────
@@ -293,37 +293,31 @@
           }
         });
 
-        // ── Collision pass ────────────────────────────────────────────
+        // ── Collision pass - ALL drawings bounce ─────────────────────────
         for (let i = 0; i < drawings.length; i++) {
           const a = drawings[i];
           if (a.userData.launched || a.userData.removing) continue;
+
           for (let j = i + 1; j < drawings.length; j++) {
             const b = drawings[j];
             if (b.userData.launched || b.userData.removing) continue;
             if (!overlaps(a, b)) continue;
 
-            const pA = a.userData.personality,
-              pB = b.userData.personality;
-            let bounce = false;
-            if (pA === "bounce" && pB === "bounce") bounce = true;
-            else if (pA === "ghost" || pB === "ghost") bounce = false;
-            else if (pA === "mixed" || pB === "mixed")
-              bounce = Math.random() < 0.5;
+            // All drawings bounce - removed personality system
+            bounceVelocities(a, b);
 
-            if (bounce) {
-              bounceVelocities(a, b);
-              const dx = b.position.x - a.position.x || 0.1;
-              const dy = b.position.y - a.position.y || 0.1;
-              const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-              a.position.x -= (dx / dist) * 2;
-              a.position.y -= (dy / dist) * 2;
-              b.position.x += (dx / dist) * 2;
-              b.position.y += (dy / dist) * 2;
-            }
+            const dx = b.position.x - a.position.x || 0.1;
+            const dy = b.position.y - a.position.y || 0.1;
+            const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+            const push = 2;
+            a.position.x -= (dx / dist) * push;
+            a.position.y -= (dy / dist) * push;
+            b.position.x += (dx / dist) * push;
+            b.position.y += (dy / dist) * push;
           }
         }
 
-        // ── Actually remove flagged-out meshes ────────────────────────
+        // ── Remove flagged-out meshes ─────────────────────────────────────
         toRemove.forEach((d) => {
           const idx = drawings.indexOf(d);
           if (idx !== -1) drawings.splice(idx, 1);

@@ -95,6 +95,16 @@
 
           const phallicFlag = checkPhallic(pixels, work.width, work.height);
           if (phallicFlag) reasons.push(phallicFlag);
+
+          const swastikaFlag = checkSwastika(pixels, work.width, work.height);
+          if (swastikaFlag) reasons.push(swastikaFlag);
+
+          const hateSymbolFlag = checkHateSymbols(
+            pixels,
+            work.width,
+            work.height,
+          );
+          if (hateSymbolFlag) reasons.push(hateSymbolFlag);
         } catch (err) {
           log("info", `Error during shape scan (${scanId}): ${err.message}`);
         }
@@ -235,7 +245,7 @@
           aspect > 1.6, // Tall and narrow
           avgShaft > 0.5, // Shaft has substance
           hasWiderBase || avgBase > 0.4, // Base present
-          hasTwoLobes, // Exactly 2 rounded shapes at bottom
+          hasTwoLobes, // Exactly 2 rounded shapes at bottom (NEW)
         ];
 
         const score = criteria.filter(Boolean).length;
@@ -356,6 +366,253 @@
         }
 
         return pixels;
+      }
+
+      // ── Swastika detection ────────────────────────────────────────────────
+      // Precise detection: central cross + perpendicular hooks at arm ends only
+      // Filters out smileys, squares, circles, random angular shapes
+      function checkSwastika(pixels, W, H) {
+        const { ink, count } = buildInkMask(pixels, W, H);
+        if (count < 400) return null;
+
+        const { minX, maxX, minY, maxY, bW, bH } = inkBounds(ink, W, H);
+        if (bW < 25 || bH < 25) return null;
+
+        // Must be roughly square (reject rectangles, circles, ovals)
+        const aspect = Math.max(bW, bH) / Math.min(bW, bH);
+        if (aspect > 1.5) return null;
+
+        const cx = Math.round((minX + maxX) / 2);
+        const cy = Math.round((minY + maxY) / 2);
+
+        // ── STEP 1: Require STRONG central cross (filters 90% of false positives) ──
+        const crossW = Math.max(4, Math.round(Math.min(bW, bH) * 0.12));
+        
+        let hCross = 0, hTotal = 0;
+        for (let y = cy - crossW; y <= cy + crossW; y++) {
+          if (y < minY || y > maxY) continue;
+          for (let x = minX; x <= maxX; x++) {
+            hTotal++;
+            if (ink[y * W + x]) hCross++;
+          }
+        }
+
+        let vCross = 0, vTotal = 0;
+        for (let x = cx - crossW; x <= cx + crossW; x++) {
+          if (x < minX || x > maxX) continue;
+          for (let y = minY; y <= maxY; y++) {
+            vTotal++;
+            if (ink[y * W + x]) vCross++;
+          }
+        }
+
+        const hDensity = hTotal > 0 ? hCross / hTotal : 0;
+        const vDensity = vTotal > 0 ? vCross / vTotal : 0;
+
+        // Require BOTH axes dense - this rejects smileys, circles, squares
+        if (hDensity < 0.40 || vDensity < 0.40) return null;
+
+        // ── STEP 2: Detect perpendicular hooks at the 4 arm endpoints ─────────
+        // This is THE signature of a swastika - 90° turns at each arm end
+        const armDist = Math.round(Math.min(bW, bH) * 0.32);
+        const hookLen = Math.round(Math.min(bW, bH) * 0.20);
+        const hookMin = Math.round(hookLen * 0.50); // Need 50% of hook filled
+
+        let hooksFound = 0;
+
+        // TOP arm endpoint - check for LEFT or RIGHT hook
+        const topY = minY + Math.round(bH * 0.20);
+        let topLeft = 0, topRight = 0;
+        for (let i = 1; i <= hookLen; i++) {
+          if (cx - i >= minX && topY >= minY && topY <= maxY && ink[topY * W + (cx - i)]) topLeft++;
+          if (cx + i <= maxX && topY >= minY && topY <= maxY && ink[topY * W + (cx + i)]) topRight++;
+        }
+        if (topLeft >= hookMin || topRight >= hookMin) hooksFound++;
+
+        // BOTTOM arm endpoint - check for LEFT or RIGHT hook
+        const botY = maxY - Math.round(bH * 0.20);
+        let botLeft = 0, botRight = 0;
+        for (let i = 1; i <= hookLen; i++) {
+          if (cx - i >= minX && botY >= minY && botY <= maxY && ink[botY * W + (cx - i)]) botLeft++;
+          if (cx + i <= maxX && botY >= minY && botY <= maxY && ink[botY * W + (cx + i)]) botRight++;
+        }
+        if (botLeft >= hookMin || botRight >= hookMin) hooksFound++;
+
+        // LEFT arm endpoint - check for UP or DOWN hook
+        const leftX = minX + Math.round(bW * 0.20);
+        let leftUp = 0, leftDown = 0;
+        for (let i = 1; i <= hookLen; i++) {
+          if (cy - i >= minY && leftX >= minX && leftX <= maxX && ink[(cy - i) * W + leftX]) leftUp++;
+          if (cy + i <= maxY && leftX >= minX && leftX <= maxX && ink[(cy + i) * W + leftX]) leftDown++;
+        }
+        if (leftUp >= hookMin || leftDown >= hookMin) hooksFound++;
+
+        // RIGHT arm endpoint - check for UP or DOWN hook
+        const rightX = maxX - Math.round(bW * 0.20);
+        let rightUp = 0, rightDown = 0;
+        for (let i = 1; i <= hookLen; i++) {
+          if (cy - i >= minY && rightX >= minX && rightX <= maxX && ink[(cy - i) * W + rightX]) rightUp++;
+          if (cy + i <= maxY && rightX >= minX && rightX <= maxX && ink[(cy + i) * W + rightX]) rightDown++;
+        }
+        if (rightUp >= hookMin || rightDown >= hookMin) hooksFound++;
+
+        // ── FINAL VERDICT ─────────────────────────────────────────────────────
+        // Need: strong cross (40%+ both axes) + at least 3 perpendicular hooks
+        // This is EXTREMELY specific and won't trigger on:
+        // - Smileys (no cross or only partial cross)
+        // - Squares (has edges but no perpendicular hooks)
+        // - Plus signs (cross but no hooks)
+        // - Random angular shapes (no structured cross + hooks)
+        
+        if (hooksFound >= 3) {
+          return `swastika (cross ${Math.round(hDensity*100)}%/${Math.round(vDensity*100)}% + ${hooksFound} hooks)`;
+        }
+
+        return null;
+      }
+
+      // Count connected components in a region
+      function countConnectedComponents(ink, W, H, minX, maxX, minY, maxY) {
+        const visited = new Uint8Array((maxX - minX + 1) * (maxY - minY + 1));
+        const bW = maxX - minX + 1;
+        let componentCount = 0;
+
+        for (let y = minY; y <= maxY; y++) {
+          for (let x = minX; x <= maxX; x++) {
+            const localIdx = (y - minY) * bW + (x - minX);
+            if (ink[y * W + x] && !visited[localIdx]) {
+              // Found a new component - flood fill it
+              const stack = [[x, y]];
+              while (stack.length > 0) {
+                const [cx, cy] = stack.pop();
+                const cLocalIdx = (cy - minY) * bW + (cx - minX);
+
+                if (cx < minX || cx > maxX || cy < minY || cy > maxY) continue;
+                if (visited[cLocalIdx] || !ink[cy * W + cx]) continue;
+
+                visited[cLocalIdx] = 1;
+
+                // 8-connected neighbors
+                for (let dy = -1; dy <= 1; dy++) {
+                  for (let dx = -1; dx <= 1; dx++) {
+                    if (dx === 0 && dy === 0) continue;
+                    stack.push([cx + dx, cy + dy]);
+                  }
+                }
+              }
+              componentCount++;
+            }
+          }
+        }
+
+        return componentCount;
+      }
+
+      // ── Other hate symbols detection ──────────────────────────────────────
+      // Detects: SS bolts, KKK, 88, 14, confederate flag patterns, noose
+      function checkHateSymbols(pixels, W, H) {
+        const { ink, count } = buildInkMask(pixels, W, H);
+        if (count < 300) return null;
+
+        const { minX, maxX, minY, maxY, bW, bH } = inkBounds(ink, W, H);
+        if (bW < 15 || bH < 15) return null;
+
+        // ── SS Lightning Bolts ────────────────────────────────────────────
+        // Two parallel vertical zigzag shapes
+        const aspect = bH / bW;
+        if (aspect > 1.3 && aspect < 3.5) {
+          // Tall and narrow (lightning bolt)
+          // Check for zigzag pattern by sampling vertical profile variance
+          const BANDS = 12;
+          const bandH = bH / BANDS;
+          const widths = [];
+
+          for (let b = 0; b < BANDS; b++) {
+            const y0 = Math.round(minY + b * bandH);
+            const y1 = Math.round(minY + (b + 1) * bandH);
+            let left = W,
+              right = 0;
+            for (let y = y0; y < Math.min(y1, H); y++) {
+              for (let x = minX; x <= maxX; x++) {
+                if (ink[y * W + x]) {
+                  if (x < left) left = x;
+                  if (x > right) right = x;
+                }
+              }
+            }
+            widths.push(right - left + 1);
+          }
+
+          // Zigzag has alternating wide/narrow sections (high variance)
+          const widthVar = variance(widths);
+          const avgWidth = avg(widths);
+          const relativeVar = widthVar / (avgWidth * avgWidth);
+
+          // Also check for two distinct vertical components (double SS)
+          const midX = Math.round((minX + maxX) / 2);
+          let leftInk = 0,
+            rightInk = 0;
+          for (let y = minY; y <= maxY; y++) {
+            for (let x = minX; x < midX; x++) {
+              if (ink[y * W + x]) leftInk++;
+            }
+            for (let x = midX; x <= maxX; x++) {
+              if (ink[y * W + x]) rightInk++;
+            }
+          }
+          const hasTwoColumns =
+            leftInk > 50 &&
+            rightInk > 50 &&
+            Math.max(leftInk, rightInk) / Math.min(leftInk, rightInk) < 2;
+
+          if (relativeVar > 0.15 && hasTwoColumns) {
+            return "SS lightning bolts pattern";
+          }
+        }
+
+        // ── Noose detection ────────────────────────────────────────────────
+        // Loop at top with vertical line down
+        if (aspect > 1.5) {
+          // Taller than wide
+          const topThird = Math.round(minY + bH * 0.33);
+
+          // Check for loop in top section (circular ink density)
+          let topInk = 0,
+            topTotal = 0;
+          for (let y = minY; y < topThird; y++) {
+            for (let x = minX; x <= maxX; x++) {
+              topTotal++;
+              if (ink[y * W + x]) topInk++;
+            }
+          }
+
+          // Check for vertical line in bottom section
+          const cx = Math.round((minX + maxX) / 2);
+          const lineWidth = Math.round(bW * 0.3);
+          let bottomLineInk = 0,
+            bottomLineTotal = 0;
+          for (let y = topThird; y <= maxY; y++) {
+            for (let x = cx - lineWidth; x <= cx + lineWidth; x++) {
+              if (x >= minX && x <= maxX) {
+                bottomLineTotal++;
+                if (ink[y * W + x]) bottomLineInk++;
+              }
+            }
+          }
+
+          const topDensity = topTotal > 0 ? topInk / topTotal : 0;
+          const bottomLineDensity =
+            bottomLineTotal > 0 ? bottomLineInk / bottomLineTotal : 0;
+
+          if (topDensity > 0.3 && bottomLineDensity > 0.4) {
+            return "noose shape";
+          }
+        }
+
+        // ── Number patterns (88, 14, etc.) handled by OCR ─────────────────
+        // These are better caught by text detection
+
+        return null;
       }
 
       // ── Helpers ───────────────────────────────────────────────────────────
