@@ -436,7 +436,8 @@ io.on("connection", (socket) => {
     const drawingId = `d_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     console.log(`[drawing] Received: ${drawingId}`);
 
-    // Optimistic: show on projector immediately
+    // Create an entry object but DO NOT publish to projectors yet.
+    // We must run OCR + shape scanning first and only emit if clean.
     const entry = {
       id: drawingId,
       imageData,
@@ -444,13 +445,6 @@ io.on("connection", (socket) => {
       flagged: false,
       reason: null,
     };
-    liveDrawings.set(drawingId, entry);
-    io.to("projectors").emit("newDrawing", {
-      id: drawingId,
-      imageData,
-      throwSpeed,
-    });
-    broadcastAdminState();
 
     const reasons = [];
 
@@ -495,25 +489,33 @@ io.on("connection", (socket) => {
 
     // ── Step 3: Take action based on results ──────────────────────────
     if (reasons.length === 0) {
+      // Clean: now publish to projectors and include in live state
       console.log(`[mod] ✓ Clean: ${drawingId}`);
+      entry.flagged = false;
+      entry.reason = null;
+      liveDrawings.set(drawingId, entry);
+      io.to("projectors").emit("newDrawing", {
+        id: drawingId,
+        imageData,
+        throwSpeed,
+      });
+      broadcastAdminState();
       return;
     }
 
-    // Flag it
-    console.log(`[mod] ✗ FLAGGED: ${drawingId} — ${reasons.join(", ")}`);
+    // Flagged: do not publish to projectors. Notify admins and log.
+    console.log(
+      `[mod] ✗ FLAGGED (blocked before publish): ${drawingId} — ${reasons.join(", ")}`,
+    );
     entry.flagged = true;
     entry.reason = reasons.join(", ");
 
-    io.to("projectors").emit("flagDrawing", { drawingId });
-    io.to("admins").emit("drawingFlagged", { drawingId, reasons });
-    broadcastAdminState();
+    // Inform admins with extra context (include imageData so they can review)
+    io.to("admins").emit("drawingFlagged", { drawingId, reasons, imageData });
+    // Also emit a short event for any connected admin UI that expects it
+    io.emit("drawingBlocked", { drawingId, reasons });
 
-    // Auto-remove after delay
-    const handle = setTimeout(() => {
-      removeDrawing(drawingId, "auto-removed after flag");
-      broadcastAdminState();
-    }, AUTO_REMOVE_MS);
-    autoRemoveTimers.set(drawingId, handle);
+    // Do not add to liveDrawings and do not auto-remove since it was never published.
   });
 
   // ── Shape result from scanner.html ────────────────────────────────────

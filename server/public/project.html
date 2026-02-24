@@ -7,7 +7,12 @@
       body {
         margin: 0;
         overflow: hidden;
-        background: black;
+        background: white;
+      }
+
+      canvas {
+        display: block;
+        background: white;
       }
     </style>
   </head>
@@ -36,7 +41,7 @@
         alpha: true,
       });
       renderer.setSize(window.innerWidth, window.innerHeight);
-      renderer.setClearColor(0x000000, 1);
+      renderer.setClearColor(0xffffff, 1);
       renderer.autoClear = false;
       document.body.appendChild(renderer.domElement);
 
@@ -51,8 +56,8 @@
 
       const drawingMap = new Map();
       const drawings = [];
-      const MAX_DRAWINGS = 50; // Increased from 30 to allow more smaller drawings
-      const TRAIL_LENGTH = 5;
+      const MAX_DRAWINGS = 30; // Increased from 30 to allow more smaller drawings
+      const TRAIL_LENGTH = 3;
 
       // ── Trail helpers ─────────────────────────────────────────────────
       function createTrailMesh(material, geometry) {
@@ -103,7 +108,8 @@
             0,
           );
 
-          const vy = Math.min(Math.max((throwSpeed || 0.6) * 8, 4), 14);
+          // Stronger launch: amplify throwSpeed to make drawings land harder
+          const vy = Math.min(Math.max((throwSpeed || 0.6) * 12, 6), 20);
 
           const trail = [];
           for (let i = 0; i < TRAIL_LENGTH; i++) {
@@ -172,7 +178,10 @@
       });
 
       // ── Collision helpers ─────────────────────────────────────────────
-      const COLLISION_PADDING = 20;
+      const COLLISION_PADDING = 12;
+
+      // Collision damping factor applied to velocities on bounce (0..1)
+      const COLLISION_DAMPING = 0.7;
 
       function overlaps(a, b) {
         const aw = (a.userData.w / 2 + COLLISION_PADDING) * a.scale.x;
@@ -196,12 +205,14 @@
           (a.userData.vy - b.userData.vy) * ny;
         if (dvn < 0) return;
 
-        // Add some randomness to bounces for chaos
-        const randomFactor = 0.8 + Math.random() * 0.4; // 0.8 to 1.2
-        a.userData.vx -= dvn * nx * randomFactor;
-        a.userData.vy -= dvn * ny * randomFactor;
-        b.userData.vx += dvn * nx * randomFactor;
-        b.userData.vy += dvn * ny * randomFactor;
+        // Add some randomness to bounces for chaos, but damp impulse so momentum is reduced
+        const randomFactor = 0.9 + Math.random() * 0.3; // 0.9 to 1.2
+        const impulseX = dvn * nx * randomFactor * COLLISION_DAMPING;
+        const impulseY = dvn * ny * randomFactor * COLLISION_DAMPING;
+        a.userData.vx -= impulseX;
+        a.userData.vy -= impulseY;
+        b.userData.vx += impulseX;
+        b.userData.vy += impulseY;
       }
 
       // ── Animation loop ────────────────────────────────────────────────
@@ -283,13 +294,16 @@
             g.mesh.material.opacity *= 0.82;
           });
 
-          // ── Edge wrap ───────────────────────────────────────────────
-          if (
-            Math.abs(d.position.x) > window.innerWidth / 2 + 250 ||
-            Math.abs(d.position.y) > window.innerHeight / 2 + 250
-          ) {
-            d.position.x *= -0.95;
-            d.position.y *= -0.95;
+          // ── Keep drawings near visible screen: soft bounce-back when approaching edges
+          const marginX = window.innerWidth / 2 + 120; // allow small offscreen
+          const marginY = window.innerHeight / 2 + 120;
+          if (Math.abs(d.position.x) > marginX) {
+            d.position.x = Math.sign(d.position.x) * marginX;
+            d.userData.vx *= -0.5; // reverse and damp horizontal velocity
+          }
+          if (Math.abs(d.position.y) > marginY) {
+            d.position.y = Math.sign(d.position.y) * marginY;
+            d.userData.vy *= -0.5; // reverse and damp vertical velocity
           }
         });
 

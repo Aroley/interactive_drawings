@@ -164,27 +164,28 @@
       // and optional testicles (exactly 2 rounded lobes) at the base
       function checkPhallic(pixels, W, H) {
         const { ink, count } = buildInkMask(pixels, W, H);
-        if (count < 500) return null;
+        // Accept much smaller drawings (kids draw small)
+        if (count < 150) return null;
 
         const { minX, maxX, minY, maxY, bW, bH } = inkBounds(ink, W, H);
-        if (bW < 5 || bH < 5) return null;
+        if (bW < 4 || bH < 4) return null;
 
         const aspect = bH / bW;
-        // Must be taller than wide (portrait orientation)
-        if (aspect < 1.3) return null;
+        // Prefer portrait but accept less extreme child drawings
+        if (aspect < 1.2) return null;
 
-        // Divide into horizontal bands to analyze width profile
-        const BANDS = 20;
-        const bandH = bH / BANDS;
+        // Analyze vertical profile into bands
+        const BANDS = 14;
+        const bandH = Math.max(1, Math.round(bH / BANDS));
         const widths = new Array(BANDS).fill(0);
 
         for (let b = 0; b < BANDS; b++) {
-          const y0 = Math.round(minY + b * bandH);
-          const y1 = Math.round(minY + (b + 1) * bandH);
+          const y0 = Math.min(maxY, Math.max(minY, minY + b * bandH));
+          const y1 = Math.min(maxY, y0 + bandH);
           let left = W,
             right = 0,
             found = false;
-          for (let y = y0; y < Math.min(y1, H); y++) {
+          for (let y = y0; y <= y1; y++) {
             for (let x = minX; x <= maxX; x++) {
               if (ink[y * W + x]) {
                 if (x < left) left = x;
@@ -199,7 +200,7 @@
         const maxW = Math.max(...widths) || 1;
         const normW = widths.map((w) => w / maxW);
 
-        // Left–right symmetry check
+        // symmetry
         const cx = (minX + maxX) / 2;
         let symScore = 0,
           symCount = 0;
@@ -219,44 +220,88 @@
         }
         const symmetry = symCount > 0 ? symScore / symCount : 0;
 
-        // Profile analysis
-        const tipBands = normW.slice(0, 3); // Top 15%
-        const shaftBands = normW.slice(3, 15); // Middle 60%
-        const baseBands = normW.slice(15); // Bottom 25%
+        const tipBands = normW.slice(0, 3);
+        const shaftBands = normW.slice(3, 10);
+        const baseBands = normW.slice(10);
 
         const avgTip = avg(tipBands);
         const avgShaft = avg(shaftBands);
         const avgBase = avg(baseBands);
 
-        // Check for testicles: base should be wider than shaft
-        const hasWiderBase = avgBase > avgShaft * 1.15;
-
-        // ── Detect exactly 2 rounded lobes at bottom (testicles) ──────────
+        const hasWiderBase = avgBase > avgShaft * 1.12;
         const hasTwoLobes = detectTwoLobes(ink, W, H, minX, maxX, minY, maxY);
-
-        // Shaft consistency (should be cylindrical)
         const shaftVariance = variance(shaftBands);
 
-        // Scoring criteria (need 4 out of 7 to flag)
+        // Simple shaft detector: narrow vertical stroke with rounded tip
+        function detectSimpleShaft() {
+          // find the largest vertical contiguous run near center
+          const midX = Math.round(cx);
+          let runs = [];
+          let runStart = null;
+          for (let y = minY; y <= maxY; y++) {
+            if (ink[y * W + midX]) {
+              if (runStart === null) runStart = y;
+            } else {
+              if (runStart !== null) {
+                runs.push([runStart, y - 1]);
+                runStart = null;
+              }
+            }
+          }
+          if (runStart !== null) runs.push([runStart, maxY]);
+          if (runs.length === 0) return false;
+          // pick the longest run
+          runs.sort((a, b) => b[1] - b[0] - (a[1] - a[0]));
+          const [s, e] = runs[0];
+          const length = e - s + 1;
+          if (length < Math.max(6, Math.round(bH * 0.3))) return false;
+
+          // check narrow width around midX for the shaft portion
+          let shaftCount = 0,
+            shaftTotal = 0;
+          const wtol = Math.max(1, Math.round(bW * 0.12));
+          for (
+            let y = s + Math.round(length * 0.15);
+            y <= e - Math.round(length * 0.05);
+            y++
+          ) {
+            shaftTotal++;
+            let rowHas = false;
+            for (let dx = -wtol; dx <= wtol; dx++) {
+              const x = midX + dx;
+              if (x < minX || x > maxX) continue;
+              if (ink[y * W + x]) {
+                rowHas = true;
+                break;
+              }
+            }
+            if (rowHas) shaftCount++;
+          }
+          return shaftTotal > 0 && shaftCount / shaftTotal > 0.6;
+        }
+
+        const simpleShaft = detectSimpleShaft();
+
+        // Scoring: be permissive for simple/child drawings
         const criteria = [
-          avgTip < avgShaft * 0.8, // Tip narrower than shaft
-          shaftVariance < 0.08, // Shaft is consistent (cylindrical)
-          symmetry > 0.65, // Left–right symmetric
-          aspect > 1.6, // Tall and narrow
-          avgShaft > 0.5, // Shaft has substance
-          hasWiderBase || avgBase > 0.4, // Base present
-          hasTwoLobes, // Exactly 2 rounded shapes at bottom (NEW)
+          avgTip < avgShaft * 0.95,
+          shaftVariance < 0.12,
+          symmetry > 0.55,
+          aspect > 1.3,
+          avgShaft > 0.35,
+          hasWiderBase || avgBase > 0.35,
+          hasTwoLobes,
         ];
 
         const score = criteria.filter(Boolean).length;
 
-        // Flag if 4 or more criteria met
-        if (score >= 4) {
+        if (score >= 4 || (simpleShaft && (score >= 3 || hasTwoLobes))) {
           const details = [];
           details.push(`aspect ${aspect.toFixed(1)}`);
           details.push(`sym ${(symmetry * 100).toFixed(0)}%`);
           if (hasWiderBase) details.push("wide-base");
           if (hasTwoLobes) details.push("2-lobes");
+          if (simpleShaft) details.push("simple-shaft");
           return `phallic shape (${score}/7: ${details.join(", ")})`;
         }
 
@@ -370,25 +415,24 @@
 
       // ── Swastika detection ────────────────────────────────────────────────
       // Precise detection: central cross + perpendicular hooks at arm ends only
-      // Filters out smileys, squares, circles, random angular shapes
       function checkSwastika(pixels, W, H) {
         const { ink, count } = buildInkMask(pixels, W, H);
-        if (count < 400) return null;
+        if (count < 250) return null;
 
         const { minX, maxX, minY, maxY, bW, bH } = inkBounds(ink, W, H);
-        if (bW < 25 || bH < 25) return null;
+        if (bW < 14 || bH < 14) return null;
 
-        // Must be roughly square (reject rectangles, circles, ovals)
+        // Must be roughly square
         const aspect = Math.max(bW, bH) / Math.min(bW, bH);
-        if (aspect > 1.5) return null;
+        if (aspect > 1.8) return null;
 
         const cx = Math.round((minX + maxX) / 2);
         const cy = Math.round((minY + maxY) / 2);
 
-        // ── STEP 1: Require STRONG central cross (filters 90% of false positives) ──
-        const crossW = Math.max(4, Math.round(Math.min(bW, bH) * 0.12));
-        
-        let hCross = 0, hTotal = 0;
+        // central cross density
+        const crossW = Math.max(2, Math.round(Math.min(bW, bH) * 0.14));
+        let hCross = 0,
+          hTotal = 0;
         for (let y = cy - crossW; y <= cy + crossW; y++) {
           if (y < minY || y > maxY) continue;
           for (let x = minX; x <= maxX; x++) {
@@ -397,7 +441,8 @@
           }
         }
 
-        let vCross = 0, vTotal = 0;
+        let vCross = 0,
+          vTotal = 0;
         for (let x = cx - crossW; x <= cx + crossW; x++) {
           if (x < minX || x > maxX) continue;
           for (let y = minY; y <= maxY; y++) {
@@ -409,63 +454,170 @@
         const hDensity = hTotal > 0 ? hCross / hTotal : 0;
         const vDensity = vTotal > 0 ? vCross / vTotal : 0;
 
-        // Require BOTH axes dense - this rejects smileys, circles, squares
-        if (hDensity < 0.40 || vDensity < 0.40) return null;
+        // require a visible cross but allow some tolerance
+        if (hDensity < 0.38 || vDensity < 0.38) return null;
 
-        // ── STEP 2: Detect perpendicular hooks at the 4 arm endpoints ─────────
-        // This is THE signature of a swastika - 90° turns at each arm end
-        const armDist = Math.round(Math.min(bW, bH) * 0.32);
-        const hookLen = Math.round(Math.min(bW, bH) * 0.20);
-        const hookMin = Math.round(hookLen * 0.50); // Need 50% of hook filled
+        // Attempt 1: hook detection via endpoint tracing (existing approach)
+        function traceEndpoint(sx, sy, dx, dy, maxSteps) {
+          let last = [sx, sy];
+          for (let i = 1; i <= maxSteps; i++) {
+            const x = sx + dx * i;
+            const y = sy + dy * i;
+            if (x < minX || x > maxX || y < minY || y > maxY) break;
+            let found = false;
+            const perp = Math.max(1, Math.round(Math.min(bW, bH) * 0.04));
+            for (let o = -perp; o <= perp; o++) {
+              const px = Math.round(x + (dy === 0 ? 0 : o));
+              const py = Math.round(y + (dx === 0 ? 0 : o));
+              if (px < minX || px > maxX || py < minY || py > maxY) continue;
+              if (ink[py * W + px]) {
+                found = true;
+                break;
+              }
+            }
+            if (found) last = [x, y];
+            else break;
+          }
+          return last;
+        }
+
+        const maxTrace = Math.round(Math.min(bW, bH) * 0.45);
+        const topEP = traceEndpoint(cx, cy, 0, -1, maxTrace);
+        const botEP = traceEndpoint(cx, cy, 0, +1, maxTrace);
+        const leftEP = traceEndpoint(cx, cy, -1, 0, maxTrace);
+        const rightEP = traceEndpoint(cx, cy, +1, 0, maxTrace);
+
+        function checkHookAt(ex, ey, orientation) {
+          const hookLen = Math.max(3, Math.round(Math.min(bW, bH) * 0.18));
+          const minFilled = Math.max(2, Math.round(hookLen * 0.5));
+          let best = 0;
+          if (orientation === "h") {
+            // left
+            let leftFilled = 0;
+            for (let i = 1; i <= hookLen; i++) {
+              const x = Math.round(ex - i);
+              if (x < minX) break;
+              for (let dy = -1; dy <= 1; dy++) {
+                const y = Math.round(ey + dy);
+                if (y < minY || y > maxY) continue;
+                if (ink[y * W + x]) {
+                  leftFilled++;
+                  break;
+                }
+              }
+            }
+            best = Math.max(best, leftFilled);
+            // right
+            let rightFilled = 0;
+            for (let i = 1; i <= hookLen; i++) {
+              const x = Math.round(ex + i);
+              if (x > maxX) break;
+              for (let dy = -1; dy <= 1; dy++) {
+                const y = Math.round(ey + dy);
+                if (y < minY || y > maxY) continue;
+                if (ink[y * W + x]) {
+                  rightFilled++;
+                  break;
+                }
+              }
+            }
+            best = Math.max(best, rightFilled);
+          } else {
+            let upFilled = 0;
+            for (let i = 1; i <= hookLen; i++) {
+              const y = Math.round(ey - i);
+              if (y < minY) break;
+              for (let dx = -1; dx <= 1; dx++) {
+                const x = Math.round(ex + dx);
+                if (x < minX || x > maxX) continue;
+                if (ink[y * W + x]) {
+                  upFilled++;
+                  break;
+                }
+              }
+            }
+            best = Math.max(best, upFilled);
+            let downFilled = 0;
+            for (let i = 1; i <= hookLen; i++) {
+              const y = Math.round(ey + i);
+              if (y > maxY) break;
+              for (let dx = -1; dx <= 1; dx++) {
+                const x = Math.round(ex + dx);
+                if (x < minX || x > maxX) continue;
+                if (ink[y * W + x]) {
+                  downFilled++;
+                  break;
+                }
+              }
+            }
+            best = Math.max(best, downFilled);
+          }
+          return best >= minFilled;
+        }
 
         let hooksFound = 0;
+        if (checkHookAt(topEP[0], topEP[1], "h")) hooksFound++;
+        if (checkHookAt(botEP[0], botEP[1], "h")) hooksFound++;
+        if (checkHookAt(leftEP[0], leftEP[1], "v")) hooksFound++;
+        if (checkHookAt(rightEP[0], rightEP[1], "v")) hooksFound++;
 
-        // TOP arm endpoint - check for LEFT or RIGHT hook
-        const topY = minY + Math.round(bH * 0.20);
-        let topLeft = 0, topRight = 0;
-        for (let i = 1; i <= hookLen; i++) {
-          if (cx - i >= minX && topY >= minY && topY <= maxY && ink[topY * W + (cx - i)]) topLeft++;
-          if (cx + i <= maxX && topY >= minY && topY <= maxY && ink[topY * W + (cx + i)]) topRight++;
+        // Attempt 2: corner L-shape detection (fallback) — detect L shapes in 4 corners
+        function detectCornerLs() {
+          const cornerW = Math.max(4, Math.round(bW * 0.3));
+          const cornerH = Math.max(4, Math.round(bH * 0.3));
+          const minLen = Math.max(3, Math.round(Math.min(bW, bH) * 0.16));
+          let found = 0;
+
+          const corners = [
+            { sx: minX, sy: minY, ox: 1, oy: 1 }, // top-left
+            { sx: maxX - cornerW + 1, sy: minY, ox: -1, oy: 1 }, // top-right
+            { sx: minX, sy: maxY - cornerH + 1, ox: 1, oy: -1 }, // bottom-left
+            { sx: maxX - cornerW + 1, sy: maxY - cornerH + 1, ox: -1, oy: -1 }, // bottom-right
+          ];
+
+          for (const c of corners) {
+            let cornerHit = false;
+            for (let y = c.sy; y < c.sy + cornerH && !cornerHit; y++) {
+              for (let x = c.sx; x < c.sx + cornerW; x++) {
+                if (x < minX || x > maxX || y < minY || y > maxY) continue;
+                if (!ink[y * W + x]) continue;
+                // measure horizontal run in direction ox
+                let hx = 0;
+                for (let i = 0; i < minLen; i++) {
+                  const xx = x + i * c.ox;
+                  if (xx < minX || xx > maxX) break;
+                  if (ink[y * W + xx]) hx++;
+                  else break;
+                }
+                if (hx < minLen) continue;
+                // measure vertical run in direction oy
+                let hy = 0;
+                for (let j = 0; j < minLen; j++) {
+                  const yy = y + j * c.oy;
+                  if (yy < minY || yy > maxY) break;
+                  if (ink[yy * W + x]) hy++;
+                  else break;
+                }
+                if (hy < minLen) continue;
+                cornerHit = true;
+                break;
+              }
+            }
+            if (cornerHit) found++;
+          }
+          return found;
         }
-        if (topLeft >= hookMin || topRight >= hookMin) hooksFound++;
 
-        // BOTTOM arm endpoint - check for LEFT or RIGHT hook
-        const botY = maxY - Math.round(bH * 0.20);
-        let botLeft = 0, botRight = 0;
-        for (let i = 1; i <= hookLen; i++) {
-          if (cx - i >= minX && botY >= minY && botY <= maxY && ink[botY * W + (cx - i)]) botLeft++;
-          if (cx + i <= maxX && botY >= minY && botY <= maxY && ink[botY * W + (cx + i)]) botRight++;
-        }
-        if (botLeft >= hookMin || botRight >= hookMin) hooksFound++;
+        const cornerCount = detectCornerLs();
 
-        // LEFT arm endpoint - check for UP or DOWN hook
-        const leftX = minX + Math.round(bW * 0.20);
-        let leftUp = 0, leftDown = 0;
-        for (let i = 1; i <= hookLen; i++) {
-          if (cy - i >= minY && leftX >= minX && leftX <= maxX && ink[(cy - i) * W + leftX]) leftUp++;
-          if (cy + i <= maxY && leftX >= minX && leftX <= maxX && ink[(cy + i) * W + leftX]) leftDown++;
-        }
-        if (leftUp >= hookMin || leftDown >= hookMin) hooksFound++;
-
-        // RIGHT arm endpoint - check for UP or DOWN hook
-        const rightX = maxX - Math.round(bW * 0.20);
-        let rightUp = 0, rightDown = 0;
-        for (let i = 1; i <= hookLen; i++) {
-          if (cy - i >= minY && rightX >= minX && rightX <= maxX && ink[(cy - i) * W + rightX]) rightUp++;
-          if (cy + i <= maxY && rightX >= minX && rightX <= maxX && ink[(cy + i) * W + rightX]) rightDown++;
-        }
-        if (rightUp >= hookMin || rightDown >= hookMin) hooksFound++;
-
-        // ── FINAL VERDICT ─────────────────────────────────────────────────────
-        // Need: strong cross (40%+ both axes) + at least 3 perpendicular hooks
-        // This is EXTREMELY specific and won't trigger on:
-        // - Smileys (no cross or only partial cross)
-        // - Squares (has edges but no perpendicular hooks)
-        // - Plus signs (cross but no hooks)
-        // - Random angular shapes (no structured cross + hooks)
-        
-        if (hooksFound >= 3) {
-          return `swastika (cross ${Math.round(hDensity*100)}%/${Math.round(vDensity*100)}% + ${hooksFound} hooks)`;
+        // Final decision: accept if either endpoint-hook method found 3+ hooks
+        // or corner L-shapes found 3+ corners and central cross is visible.
+        if (
+          (hooksFound >= 3 && hDensity >= 0.4 && vDensity >= 0.4) ||
+          (cornerCount >= 3 && hDensity >= 0.38 && vDensity >= 0.38)
+        ) {
+          const totalHooks = Math.max(hooksFound, cornerCount);
+          return `swastika (cross ${Math.round(hDensity * 100)}%/${Math.round(vDensity * 100)}% + ${totalHooks} hooks)`;
         }
 
         return null;
