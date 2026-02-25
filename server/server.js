@@ -518,6 +518,37 @@ io.on("connection", (socket) => {
     // Do not add to liveDrawings and do not auto-remove since it was never published.
   });
 
+  // ── Admin upload / publish (from admin UI) ───────────────────────────
+  socket.on("adminUpload", ({ imageData, throwSpeed }) => {
+    // Only allow admin sockets to publish via this channel
+    if (socket.data.role !== "admin") {
+      console.warn(
+        `[adminUpload] Rejected publish from non-admin socket: ${socket.id}`,
+      );
+      return;
+    }
+
+    const drawingId = `adm_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    console.log(`[adminUpload] Admin published: ${drawingId}`);
+
+    const entry = {
+      id: drawingId,
+      imageData,
+      throwSpeed: typeof throwSpeed === "number" ? throwSpeed : 0.9,
+      flagged: false,
+      reason: null,
+    };
+
+    // Add to live drawings and immediately emit to projectors
+    liveDrawings.set(drawingId, entry);
+    io.to("projectors").emit("newDrawing", {
+      id: drawingId,
+      imageData,
+      throwSpeed: entry.throwSpeed,
+    });
+    broadcastAdminState();
+  });
+
   // ── Shape result from scanner.html ────────────────────────────────────
   socket.on("shapeResult", ({ scanId, reasons }) => {
     const pending = pendingScans.get(scanId);

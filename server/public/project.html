@@ -7,7 +7,7 @@
       body {
         margin: 0;
         overflow: hidden;
-        background: white;
+        background: rgb(255, 255, 255);
       }
 
       canvas {
@@ -41,7 +41,7 @@
         alpha: true,
       });
       renderer.setSize(window.innerWidth, window.innerHeight);
-      renderer.setClearColor(0xffffff, 1);
+      renderer.setClearColor(0x9489d8, 1);
       renderer.autoClear = false;
       document.body.appendChild(renderer.domElement);
 
@@ -102,11 +102,9 @@
           });
 
           const mesh = new THREE.Mesh(geometry, material);
-          mesh.position.set(
-            (Math.random() - 0.5) * window.innerWidth * 0.5,
-            -window.innerHeight / 2 - 200,
-            0,
-          );
+          // spawn X more spread out so drawings don't line up in a narrow column
+          const spawnX = (Math.random() - 0.5) * window.innerWidth * 0.9;
+          mesh.position.set(spawnX, -window.innerHeight / 2 - 200, 0);
 
           // Stronger launch: amplify throwSpeed to make drawings land harder
           const vy = Math.min(Math.max((throwSpeed || 0.6) * 12, 6), 20);
@@ -118,8 +116,8 @@
 
           mesh.userData = {
             drawingId: id,
-            // More chaotic random velocities
-            vx: (Math.random() - 0.5) * 3, // Was 1.5, now 3
+            // Smaller initial random horizontal velocity but with a bit more spread
+            vx: (Math.random() - 0.5) * 3,
             vy,
             wobble: Math.random() * Math.PI * 2,
             launched: true,
@@ -129,7 +127,7 @@
             morphSpeed: 0.4 + Math.random() * 0.8,
             morphAmp: 0.04 + Math.random() * 0.06,
             morphPhase: Math.random() * Math.PI * 2,
-            rotationSpeed: (Math.random() - 0.5) * 0.008, // Was 0.003, now faster
+            rotationSpeed: (Math.random() - 0.5) * 0.006,
             trail,
             trailIndex: 0,
             trailTimer: 0,
@@ -137,6 +135,14 @@
             flagTimer: 0,
             removing: false,
             removeProgress: 0,
+            // Per-drawing agency: occasional impulses and subtle drift to fake life
+            agencyTimer: 0,
+            // base interval in frames for impulses (will be randomized at runtime)
+            agencyInterval: 80 + Math.floor(Math.random() * 140),
+            // strength of occasional impulse
+            agencyStrength: 0.6 + Math.random() * 1.2,
+            // small variation in how strongly the center pull affects this drawing
+            centerPullFactor: 0.6 + Math.random() * 1.2,
           };
 
           scene.add(mesh);
@@ -215,6 +221,12 @@
         b.userData.vy += impulseY;
       }
 
+      // Physics tuning
+      const FRICTION = 0.96; // apply each frame to velocities
+      const CENTER_PULL = 0.02; // small force pulling drawings toward screen center
+      const MAX_VEL = 10; // clamp velocities so items don't escape
+      const COLLISION_PUSH = 1.0; // reduced positional push after collision
+
       // ── Animation loop ────────────────────────────────────────────────
       function animate() {
         requestAnimationFrame(animate);
@@ -254,14 +266,15 @@
 
           // ── Movement ───────────────────────────────────────────────
           if (ud.launched) {
-            ud.vy -= 0.12;
+            // stronger gravity initially for a snappier landing
+            ud.vy -= 0.18;
             d.position.x += ud.vx;
             d.position.y += ud.vy;
             if (Math.abs(ud.vy) < 1.5) {
               ud.launched = false;
               // More chaotic post-launch velocity
-              ud.vy = (Math.random() - 0.5) * 1.5;
-              ud.vx = (Math.random() - 0.5) * 1.5;
+              ud.vy = (Math.random() - 0.5) * 1.2;
+              ud.vx = (Math.random() - 0.5) * 1.2;
             }
           } else {
             d.position.x += ud.vx;
@@ -269,6 +282,50 @@
             // More pronounced wobble
             d.position.y += Math.sin(t + ud.wobble) * 0.3;
           }
+
+          // Apply friction to velocities
+          ud.vx *= FRICTION;
+          ud.vy *= FRICTION;
+
+          // Per-drawing gentle lateral drift to break grid patterns
+          const driftX = Math.sin(t * 0.8 + ud.wobble) * 0.08;
+          const driftY = Math.cos(t * 0.6 + ud.morphPhase) * 0.04;
+          ud.vx += driftX * (ud.launched ? 0.3 : 1);
+          ud.vy += driftY * (ud.launched ? 0.3 : 1);
+
+          // center pull force proportional to distance from center, modulated per-drawing
+          const pullFactor = ud.centerPullFactor || 1;
+          const pullX =
+            -d.position.x *
+            CENTER_PULL *
+            0.001 *
+            (ud.launched ? 0.6 : 1) *
+            pullFactor;
+          const pullY =
+            -d.position.y *
+            CENTER_PULL *
+            0.001 *
+            (ud.launched ? 0.6 : 1) *
+            pullFactor;
+          ud.vx += pullX;
+          ud.vy += pullY;
+
+          // Agency impulses: occasional small random pushes so items appear to make decisions
+          ud.agencyTimer = (ud.agencyTimer || 0) + 1;
+          if (ud.agencyTimer > (ud.agencyInterval || 100)) {
+            ud.agencyTimer = 0;
+            // Random directional impulse biased toward center to avoid escape
+            const ang = Math.random() * Math.PI * 2;
+            const ix = Math.cos(ang) * ud.agencyStrength;
+            const iy = Math.sin(ang) * ud.agencyStrength;
+            // Slightly bias impulse toward center
+            ud.vx += ix - d.position.x * 0.0006;
+            ud.vy += iy - d.position.y * 0.0006;
+          }
+
+          // Clamp velocities
+          ud.vx = Math.max(-MAX_VEL, Math.min(MAX_VEL, ud.vx));
+          ud.vy = Math.max(-MAX_VEL, Math.min(MAX_VEL, ud.vy));
 
           // ── Morph / breathe ─────────────────────────────────────────
           const b1 =
@@ -323,7 +380,7 @@
             const dx = b.position.x - a.position.x || 0.1;
             const dy = b.position.y - a.position.y || 0.1;
             const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-            const push = 2;
+            const push = COLLISION_PUSH;
             a.position.x -= (dx / dist) * push;
             a.position.y -= (dy / dist) * push;
             b.position.x += (dx / dist) * push;

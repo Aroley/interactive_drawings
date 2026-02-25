@@ -399,7 +399,21 @@
         <div class="logo-dot" id="live-dot"></div>
         Moderation Admin
       </div>
-      <span id="scanner-status">⬤ scanner offline</span>
+      <div style="display: flex; gap: 12px; align-items: center">
+        <label
+          class="btn"
+          for="admin-upload-input"
+          style="cursor: pointer; padding: 8px 12px"
+          >⬆ Upload</label
+        >
+        <input
+          id="admin-upload-input"
+          type="file"
+          accept="image/*"
+          style="display: none"
+        />
+        <span id="scanner-status">⬤ scanner offline</span>
+      </div>
     </header>
 
     <div id="stats">
@@ -556,6 +570,7 @@
           <div class="card-id">${d.id.slice(0, 24)}…</div>
           ${d.flagged ? `<div class="flag-badge">🚩 ${d.reason || "flagged"}</div>` : ""}
           <div class="card-actions">
+            <button class="btn" onclick="download('${d.id}')">⬇ Save</button>
             ${d.flagged ? `<button class="btn btn-pardon" onclick="pardon('${d.id}')">✓ Keep</button>` : ""}
             <button class="btn btn-remove" onclick="remove('${d.id}')">✕ Remove</button>
           </div>
@@ -667,6 +682,71 @@
         document.getElementById("toast-wrap").appendChild(el);
         setTimeout(() => el.remove(), 3000);
       }
+
+      // Drag & drop support for publishing images from disk
+      (function setupDragDrop() {
+        const gridEl = document.getElementById("grid");
+        gridEl.addEventListener("dragover", (e) => {
+          e.preventDefault();
+          gridEl.style.opacity = 0.9;
+        });
+        gridEl.addEventListener("dragleave", () => {
+          gridEl.style.opacity = 1;
+        });
+        gridEl.addEventListener("drop", (e) => {
+          e.preventDefault();
+          gridEl.style.opacity = 1;
+          const file = e.dataTransfer.files && e.dataTransfer.files[0];
+          if (!file) return toast("No file found", "red");
+          if (!file.type.startsWith("image/"))
+            return toast("Not an image", "red");
+          const reader = new FileReader();
+          reader.onload = () => {
+            socket.emit("adminUpload", {
+              imageData: reader.result,
+              throwSpeed: 0.9,
+            });
+            toast("Uploaded and published", "green");
+          };
+          reader.readAsDataURL(file);
+        });
+      })();
+
+      // ── Admin download / publish helpers ────────────────────────────
+      window.download = (id) => {
+        const d = drawings.find((x) => x.id === id);
+        if (!d || !d.thumb) return toast("No image to save", "red");
+        const a = document.createElement("a");
+        a.href = d.thumb;
+        a.download = `${id}.png`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        toast("Saved locally", "green");
+      };
+
+      window.publish = (id) => {
+        const d = drawings.find((x) => x.id === id);
+        if (!d || !d.thumb) return toast("No image to publish", "red");
+        socket.emit("adminUpload", { imageData: d.thumb, throwSpeed: 0.9 });
+        toast("Published to projector", "green");
+      };
+
+      // File upload from disk
+      document
+        .getElementById("admin-upload-input")
+        .addEventListener("change", (ev) => {
+          const f = ev.target.files && ev.target.files[0];
+          if (!f) return;
+          const reader = new FileReader();
+          reader.onload = () => {
+            const data = reader.result;
+            socket.emit("adminUpload", { imageData: data, throwSpeed: 0.9 });
+            toast("Uploaded and published", "green");
+            ev.target.value = null;
+          };
+          reader.readAsDataURL(f);
+        });
     </script>
   </body>
 </html>

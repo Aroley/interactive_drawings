@@ -282,6 +282,152 @@
 
         const simpleShaft = detectSimpleShaft();
 
+        // Rotated shaft detection: compute principal axis (PCA) of ink points
+        function detectRotatedShaft() {
+          // collect ink points
+          const pts = [];
+          for (let y = minY; y <= maxY; y++) {
+            for (let x = minX; x <= maxX; x++) {
+              if (ink[y * W + x]) pts.push([x, y]);
+            }
+          }
+          if (pts.length < 30) return false;
+
+          // centroid
+          let sx = 0,
+            sy = 0;
+          for (const [x, y] of pts) {
+            sx += x;
+            sy += y;
+          }
+          const cxP = sx / pts.length;
+          const cyP = sy / pts.length;
+
+          // covariance
+          let cxx = 0,
+            cxy = 0,
+            cyy = 0;
+          for (const [x, y] of pts) {
+            const dx = x - cxP;
+            const dy = y - cyP;
+            cxx += dx * dx;
+            cxy += dx * dy;
+            cyy += dy * dy;
+          }
+          cxx /= pts.length;
+          cxy /= pts.length;
+          cyy /= pts.length;
+
+          // principal axis angle
+          const theta = 0.5 * Math.atan2(2 * cxy, cxx - cyy);
+          const ux = Math.cos(theta);
+          const uy = Math.sin(theta);
+
+          // project points onto axis and measure orthogonal spread
+          let minP = Infinity,
+            maxP = -Infinity,
+            minPerp = Infinity,
+            maxPerp = -Infinity;
+          for (const [x, y] of pts) {
+            const dx = x - cxP;
+            const dy = y - cyP;
+            const proj = dx * ux + dy * uy;
+            const perp = -dx * uy + dy * ux; // perpendicular coordinate
+            if (proj < minP) minP = proj;
+            if (proj > maxP) maxP = proj;
+            if (perp < minPerp) minPerp = perp;
+            if (perp > maxPerp) maxPerp = perp;
+          }
+          const length = maxP - minP;
+          const perpWidth = maxPerp - minPerp;
+          if (perpWidth <= 0) return false;
+
+          // projected aspect along principal axis
+          const projAspect = length / perpWidth;
+          if (projAspect < 1.2) return false;
+
+          // Now check for a contiguous run along axis with narrow cross-section
+          const steps = Math.max(8, Math.round(length));
+          let runStart = null,
+            bestRun = 0;
+          const wtol = Math.max(1, Math.round(Math.max(bW, bH) * 0.08));
+          for (let s = 0; s <= steps; s++) {
+            const t = minP + (length * s) / steps;
+            // center point in image coords
+            const cxs = Math.round(cxP + ux * t);
+            const cys = Math.round(cyP + uy * t);
+            // count ink in cross-section within perp tolerance
+            let crossCount = 0,
+              crossTotal = 0;
+            for (let off = -wtol; off <= wtol; off++) {
+              const xx = Math.round(cxs - uy * off);
+              const yy = Math.round(cys + ux * off);
+              if (xx < minX || xx > maxX || yy < minY || yy > maxY) continue;
+              crossTotal++;
+              if (ink[yy * W + xx]) crossCount++;
+            }
+            const frac = crossTotal > 0 ? crossCount / crossTotal : 0;
+            if (frac > 0.6) {
+              if (runStart === null) runStart = s;
+            } else {
+              if (runStart !== null) {
+                bestRun = Math.max(bestRun, s - runStart);
+                runStart = null;
+              }
+            }
+          }
+          if (runStart !== null) bestRun = Math.max(bestRun, steps - runStart);
+
+          // require a reasonably long run along axis
+          return bestRun >= Math.max(6, Math.round(steps * 0.4));
+        }
+
+        const rotatedShaft = detectRotatedShaft();
+
+        // Detect narrow/tapered tip near the top compared to shaft and rounded base
+        function detectTipNarrow() {
+          // Require at least a small taper: tip bands should be noticeably narrower
+          if (!tipBands || tipBands.length < 3) return false;
+          const t0 = tipBands[0] || 0;
+          const t1 = tipBands[1] || 0;
+          const t2 = tipBands[2] || 0;
+          // tip should be narrower than shaft by a margin
+          if (!(t0 < avgShaft * 0.6 && t1 < avgShaft * 0.8)) return false;
+
+          // Expect widths to increase going down (taper toward top)
+          if (!(t0 <= t1 && t1 <= t2)) return false;
+
+          // Check there's a central cap at the very top: center should have ink while sides fall off
+          const topY = minY + Math.max(0, Math.round(bH * 0.06));
+          const capHalf = Math.max(1, Math.round(Math.max(1, bW * 0.06)));
+          let centerFilled = 0,
+            sideFilled = 0,
+            centerTotal = 0,
+            sideTotal = 0;
+          const cxRound = Math.round(cx);
+          for (let x = cxRound - capHalf; x <= cxRound + capHalf; x++) {
+            if (x < minX || x > maxX) continue;
+            centerTotal++;
+            if (ink[topY * W + x]) centerFilled++;
+          }
+          for (let x = minX; x <= maxX; x++) {
+            if (x >= cxRound - capHalf && x <= cxRound + capHalf) continue;
+            sideTotal++;
+            if (ink[topY * W + x]) sideFilled++;
+          }
+          const centerFrac = centerTotal ? centerFilled / centerTotal : 0;
+          const sideFrac = sideTotal ? sideFilled / sideTotal : 0;
+          if (centerFrac < 0.25) return false;
+          if (!(centerFrac > sideFrac * 1.6)) return false;
+
+          // Also require two rounded lobes at base (detectTwoLobes already checks this)
+          if (!hasTwoLobes) return false;
+
+          return true;
+        }
+
+        const tipNarrow = detectTipNarrow();
+
         // Scoring: be permissive for simple/child drawings
         const criteria = [
           avgTip < avgShaft * 0.95,
@@ -291,18 +437,26 @@
           avgShaft > 0.35,
           hasWiderBase || avgBase > 0.35,
           hasTwoLobes,
+          tipNarrow,
         ];
 
         const score = criteria.filter(Boolean).length;
 
-        if (score >= 4 || (simpleShaft && (score >= 3 || hasTwoLobes))) {
+        if (
+          score >= 4 ||
+          // allow simpleShaft if it has clear two-lobes or a tapered tip
+          (simpleShaft && (score >= 3 || hasTwoLobes || tipNarrow)) ||
+          rotatedShaft
+        ) {
           const details = [];
           details.push(`aspect ${aspect.toFixed(1)}`);
           details.push(`sym ${(symmetry * 100).toFixed(0)}%`);
           if (hasWiderBase) details.push("wide-base");
           if (hasTwoLobes) details.push("2-lobes");
+          if (tipNarrow) details.push("tapered-tip");
           if (simpleShaft) details.push("simple-shaft");
-          return `phallic shape (${score}/7: ${details.join(", ")})`;
+          if (rotatedShaft) details.push("rotated-shaft");
+          return `phallic shape (${score}/8: ${details.join(", ")})`;
         }
 
         return null;
@@ -430,11 +584,12 @@
         const cy = Math.round((minY + maxY) / 2);
 
         // central cross density
-        const crossW = Math.max(2, Math.round(Math.min(bW, bH) * 0.14));
+        // slightly larger central cross region for stricter checks
+        const crossW = Math.max(2, Math.round(Math.min(bW, bH) * 0.18));
         let hCross = 0,
           hTotal = 0;
         for (let y = cy - crossW; y <= cy + crossW; y++) {
-          if (y < minY || y > maxY) continue;
+          const crossW = Math.max(2, Math.round(Math.min(bW, bH) * 0.2));
           for (let x = minX; x <= maxX; x++) {
             hTotal++;
             if (ink[y * W + x]) hCross++;
@@ -454,13 +609,25 @@
         const hDensity = hTotal > 0 ? hCross / hTotal : 0;
         const vDensity = vTotal > 0 ? vCross / vTotal : 0;
 
-        // require a visible cross but allow some tolerance
-        if (hDensity < 0.38 || vDensity < 0.38) return null;
+        // require a clearly visible cross
+        if (hDensity < 0.45 || vDensity < 0.45) return null;
 
         // Attempt 1: hook detection via endpoint tracing (existing approach)
         function traceEndpoint(sx, sy, dx, dy, maxSteps) {
-          let last = [sx, sy];
+          if (hDensity < 0.5 || vDensity < 0.5) return null;
+          let last = null;
           for (let i = 1; i <= maxSteps; i++) {
+            // Reject overly fragmented scribbles: too many disjoint components inside bbox
+            const compCount = countConnectedComponents(
+              ink,
+              W,
+              H,
+              minX,
+              maxX,
+              minY,
+              maxY,
+            );
+            if (compCount > 8) return null;
             const x = sx + dx * i;
             const y = sy + dy * i;
             if (x < minX || x > maxX || y < minY || y > maxY) break;
@@ -481,15 +648,15 @@
           return last;
         }
 
-        const maxTrace = Math.round(Math.min(bW, bH) * 0.45);
+        const maxTrace = Math.round(Math.min(bW, bH) * 0.5);
         const topEP = traceEndpoint(cx, cy, 0, -1, maxTrace);
         const botEP = traceEndpoint(cx, cy, 0, +1, maxTrace);
         const leftEP = traceEndpoint(cx, cy, -1, 0, maxTrace);
         const rightEP = traceEndpoint(cx, cy, +1, 0, maxTrace);
 
         function checkHookAt(ex, ey, orientation) {
-          const hookLen = Math.max(3, Math.round(Math.min(bW, bH) * 0.18));
-          const minFilled = Math.max(2, Math.round(hookLen * 0.5));
+          const hookLen = Math.max(4, Math.round(Math.min(bW, bH) * 0.22));
+          const minFilled = Math.max(3, Math.round(hookLen * 0.6));
           let best = 0;
           if (orientation === "h") {
             // left
@@ -556,10 +723,22 @@
         }
 
         let hooksFound = 0;
-        if (checkHookAt(topEP[0], topEP[1], "h")) hooksFound++;
-        if (checkHookAt(botEP[0], botEP[1], "h")) hooksFound++;
-        if (checkHookAt(leftEP[0], leftEP[1], "v")) hooksFound++;
-        if (checkHookAt(rightEP[0], rightEP[1], "v")) hooksFound++;
+        if (topEP && checkHookAt(topEP[0], topEP[1], "h")) hooksFound++;
+        if (botEP && checkHookAt(botEP[0], botEP[1], "h")) hooksFound++;
+        if (leftEP && checkHookAt(leftEP[0], leftEP[1], "v")) hooksFound++;
+        if (rightEP && checkHookAt(rightEP[0], rightEP[1], "v")) hooksFound++;
+
+        // Simple orientation sanity: endpoints should be on their respective sides
+        const orientationMatch = Boolean(
+          topEP &&
+          botEP &&
+          leftEP &&
+          rightEP &&
+          topEP[1] < cy &&
+          botEP[1] > cy &&
+          leftEP[0] < cx &&
+          rightEP[0] > cx,
+        );
 
         // Attempt 2: corner L-shape detection (fallback) — detect L shapes in 4 corners
         function detectCornerLs() {
@@ -612,9 +791,14 @@
 
         // Final decision: accept if either endpoint-hook method found 3+ hooks
         // or corner L-shapes found 3+ corners and central cross is visible.
+        // Require all 4 hooks and consistent rotational orientation for a stricter match,
+        // otherwise require all 4 corner Ls as fallback.
         if (
-          (hooksFound >= 3 && hDensity >= 0.4 && vDensity >= 0.4) ||
-          (cornerCount >= 3 && hDensity >= 0.38 && vDensity >= 0.38)
+          (hooksFound === 4 &&
+            orientationMatch &&
+            hDensity >= 0.45 &&
+            vDensity >= 0.45) ||
+          (cornerCount >= 4 && hDensity >= 0.42 && vDensity >= 0.42)
         ) {
           const totalHooks = Math.max(hooksFound, cornerCount);
           return `swastika (cross ${Math.round(hDensity * 100)}%/${Math.round(vDensity * 100)}% + ${totalHooks} hooks)`;
